@@ -1,0 +1,18 @@
+# Environments
+.env
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Download folder (optional, if you create it dynamically)
+downloads/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
