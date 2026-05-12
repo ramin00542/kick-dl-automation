@@ -1,15 +1,30 @@
 name: Download All VODs from a Kick.com Channel
+
 on:
+  # فعال‌سازی اجرای دستی (manual) با ورودی نام کاربری
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'نام کانال (username) در kick.com'
+        required: true
+        type: string
+        default: 'keoxer'
+  # اجرا توسط commit message مثل قبل
   push:
     branches:
       - "**"
+
 jobs:
   download-all-kick-vods:
-    # این شرط باعث می‌شه فقط وقتی اجرا بشه که پیام commit با عبارت 'kick-all:' شروع بشه
-    if: contains(github.event.head_commit.message, 'kick-all:')
+    # شرط: اگر کار با push است، پیام باید شامل 'kick-all:' باشد
+    # اگر manual trigger باشد، بدون شرط اجرا شود
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'kick-all:')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,44 +39,42 @@ jobs:
       - name: Install kick-dl
         run: pip install kick-dl
 
-      - name: Extract username and download all VODs
+      - name: Extract username (from commit or manual input)
+        id: get-username
         run: |
-          commit_msg=$(git log -1 --pretty=%B)
-          echo "Commit message: $commit_msg"
-
-          # نام کاربری را از پیام commit استخراج می‌کند
-          username=$(echo "$commit_msg" | grep -oP 'kick-all:\s*\K.*' | xargs)
-          if [ -z "$username" ]; then
-            echo "❌ No username found in commit message."
-            exit 1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            USERNAME="${{ github.event.inputs.channel }}"
+            echo "✅ Manual trigger: channel = $USERNAME"
+          else
+            COMMIT_MSG=$(git log -1 --pretty=%B)
+            USERNAME=$(echo "$COMMIT_MSG" | grep -oP 'kick-all:\s*\K.*' | xargs)
+            if [ -z "$USERNAME" ]; then
+              echo "❌ No 'kick-all:' found in commit message."
+              exit 1
+            fi
+            echo "✅ Commit trigger: channel = $USERNAME"
           fi
+          echo "username=$USERNAME" >> $GITHUB_OUTPUT
 
-          echo "🎯 Username: $username"
-          echo "Starting download of all VODs for channel: $username"
-
-          # ایجاد پوشه برای ذخیره ویدیوها
+      - name: Download all VODs
+        run: |
+          USERNAME="${{ steps.get-username.outputs.username }}"
+          echo "🎯 Downloading all VODs for: $USERNAME"
           mkdir -p downloads
-
-          # دانلود تمام ویدیوهای کانال (مشابه دستور kick-dl -c username -a)
-          kick-dl -c "$username" --download_all -q best -C 3
-
-          # انتقال تمام فایل‌های دانلود شده به پوشه 'downloads'
-          #  Kick-dl معمولاً فایل‌ها را در دایرکتوری فعلی ذخیره می‌کند.
-          echo "Moving downloaded files to 'downloads' directory..."
-          mv *.mp4 downloads/ 2>/dev/null || echo "No mp4 files found to move."
+          # دانلود تمام ویدیوها (اگر خطایی رخ بده، ادامه بده)
+          kick-dl -c "$USERNAME" --download_all -q best -C 3 || echo "⚠️ Download incomplete or no VODs found."
+          # انتقال فایل‌های mp4 به پوشه downloads
+          mv *.mp4 downloads/ 2>/dev/null || echo "No mp4 files to move."
 
       - name: Commit and push downloaded files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add downloads/
           if git diff --staged --quiet; then
             echo "No new files to commit."
           else
-            git commit -m "Add all VODs for ${{ env.KICK_USERNAME }} [skip ci]"
+            git commit -m "Add VODs for ${{ steps.get-username.outputs.username }} [skip ci]"
             git pull --rebase origin ${{ github.ref_name }}
             git push origin HEAD:${{ github.ref_name }}
           fi
-        env:
-          KICK_USERNAME: ${{ steps.extract.outputs.username }}
