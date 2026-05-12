@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 'Kick channel username (e.g., keoxer)'
+        description: 'نام کاربری کانال در kick.com (مثلاً keoxer)'
         required: true
         type: string
   push:
@@ -26,10 +26,10 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install ffmpeg and Python dependencies
+      - name: Install ffmpeg and Python requests
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg jq
+          sudo apt-get install -y ffmpeg
           pip install requests
 
       - name: Extract username
@@ -41,40 +41,43 @@ jobs:
             COMMIT_MSG=$(git log -1 --pretty=%B)
             USERNAME=$(echo "$COMMIT_MSG" | grep -oP 'kick-all:\s*\K.*' | xargs)
             if [ -z "$USERNAME" ]; then
-              echo "❌ No username found."
+              echo "❌ نام کاربری یافت نشد."
               exit 1
             fi
           fi
           echo "username=$USERNAME" >> $GITHUB_OUTPUT
-          echo "🎯 Username: $USERNAME"
+          echo "🎯 نام کاربری: $USERNAME"
 
       - name: Download all VODs via Kick API + ffmpeg
         run: |
-          USERNAME="${{ steps.get-username.outputs.username }}"
+          export USERNAME="${{ steps.get-username.outputs.username }}"
           mkdir -p downloads
           python3 << 'EOF'
           import requests, time, subprocess, os, sys, json
-          username = os.environ['USERNAME']
+          username = os.environ.get('USERNAME')
+          if not username:
+              print("❌ متغیر USERNAME تنظیم نشده است.")
+              sys.exit(1)
           headers = {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               'Accept': 'application/json',
               'Referer': f'https://kick.com/{username}'
           }
 
-          # Get channel ID
+          # دریافت ID کانال
           channel_url = f'https://kick.com/api/v2/channels/{username}'
           resp = requests.get(channel_url, headers=headers)
           if resp.status_code != 200:
-              print(f"❌ Cannot get channel info: {resp.status_code}")
+              print(f"❌ نمی‌توان اطلاعات کانال را گرفت: {resp.status_code}")
               sys.exit(1)
           channel_data = resp.json()
           channel_id = channel_data.get('id')
           if not channel_id:
-              print("❌ No channel ID found")
+              print("❌ ID کانال پیدا نشد.")
               sys.exit(1)
-          print(f"✅ Channel ID: {channel_id}")
+          print(f"✅ ID کانال: {channel_id}")
 
-          # Paginate through VODs
+          # واکشی تمام ویدیوها (صفحه‌بندی)
           page = 1
           video_urls = []
           while True:
@@ -88,47 +91,46 @@ jobs:
                   break
               for video in videos:
                   vod_id = video.get('id')
-                  title = video.get('title', 'untitled').replace('/', '_')
+                  title = video.get('title', 'بدون عنوان').replace('/', '_').replace('\\', '_')
                   video_urls.append((vod_id, title))
-              print(f"📄 Page {page} fetched, total VODs found so far: {len(video_urls)}")
+              print(f"📄 صفحه {page} دریافت شد، مجموع ویدیوها تا اینجا: {len(video_urls)}")
               if len(videos) < 30:
                   break
               page += 1
               time.sleep(1)
 
           if not video_urls:
-              print("❌ No VODs found for this channel.")
+              print("❌ هیچ ویدیویی برای این کانال یافت نشد.")
               sys.exit(1)
 
-          print(f"🎬 Found {len(video_urls)} VODs. Starting download...")
+          print(f"🎬 {len(video_urls)} ویدیو پیدا شد. شروع دانلود...")
           for vod_id, title in video_urls:
               output_file = f"downloads/{title}.mp4"
               if os.path.exists(output_file) and os.path.getsize(output_file) > 1024*1024:
-                  print(f"⏭️ Skipping {title} (already exists)")
+                  print(f"⏭️ رد شدن از {title} (از قبل وجود دارد)")
                   continue
-              # Get the source playlist (m3u8)
+              # دریافت لینک پخش (m3u8)
               source_url = f'https://kick.com/api/v2/videos/{vod_id}/source'
               resp = requests.get(source_url, headers=headers)
               if resp.status_code != 200:
-                  print(f"⚠️ Could not get source for {title}, skipping")
+                  print(f"⚠️ لینک مبدأ برای {title} دریافت نشد، رد می‌شود.")
                   continue
               source_data = resp.json()
-              # The API returns an object with "source" field containing the m3u8 URL
               m3u8 = source_data.get('source')
               if not m3u8:
-                  print(f"⚠️ No m3u8 found for {title}")
+                  print(f"⚠️ هیچ m3u8 برای {title} وجود ندارد.")
                   continue
-              # Download with ffmpeg
+              # دانلود با ffmpeg
               cmd = ['ffmpeg', '-y', '-i', m3u8, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', output_file]
-              print(f"⬇️ Downloading: {title}")
+              print(f"⬇️ در حال دانلود: {title}")
               result = subprocess.run(cmd, capture_output=True, text=True)
               if result.returncode != 0:
-                  print(f"❌ ffmpeg error for {title}: {result.stderr[:200]}")
+                  print(f"❌ خطا در ffmpeg برای {title}: {result.stderr[:200]}")
               else:
-                  print(f"✅ Saved: {output_file}")
-              time.sleep(2)  # be gentle
+                  print(f"✅ ذخیره شد: {output_file}")
+              time.sleep(2)  # احترام به سرور
           EOF
-          echo "Download process finished."
+          echo "دانلود کامل شد."
 
       - name: Commit and push downloaded files
         run: |
@@ -136,9 +138,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -f downloads/
           if git diff --staged --quiet; then
-            echo "No new files to commit."
+            echo "هیچ فایل جدیدی برای commit وجود ندارد."
           else
-            git commit -m "Add VODs for ${{ steps.get-username.outputs.username }} [skip ci]"
+            git commit -m "اضافه کردن ویدیوهای کانال ${{ steps.get-username.outputs.username }} [skip ci]"
             git pull --rebase origin ${{ github.ref_name }}
             git push origin HEAD:${{ github.ref_name }}
           fi
