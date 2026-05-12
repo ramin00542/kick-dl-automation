@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 'Kick username (bv: keoxer)'
+        description: 'Kick channel username (e.g., keoxer)'
         required: true
         type: string
   push:
@@ -26,11 +26,11 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install yt-dlp and ffmpeg
+      - name: Install ffmpeg and Python dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          pip install yt-dlp
+          sudo apt-get install -y ffmpeg jq
+          pip install requests
 
       - name: Extract username
         id: get-username
@@ -48,30 +48,89 @@ jobs:
           echo "username=$USERNAME" >> $GITHUB_OUTPUT
           echo "🎯 Username: $USERNAME"
 
-      - name: Download all VODs with yt-dlp
+      - name: Download all VODs via Kick API + ffmpeg
         run: |
           USERNAME="${{ steps.get-username.outputs.username }}"
           mkdir -p downloads
-          cd downloads
-          # Download het volledige kanaal (alle VODs) met yt-dlp
-          # Gebruik een betrouwbare user-agent en accepteer self-signed certs
-          yt-dlp \
-            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            --no-check-certificate \
-            --sleep-interval 5 \
-            --max-sleep-interval 10 \
-            --retries 5 \
-            --continue \
-            --output "%(title)s.%(ext)s" \
-            "https://kick.com/$USERNAME" \
-            || echo "⚠️ yt-dlp failed, trying with referer..."
-          if [ ! "$(ls -A .)" ]; then
-            echo "❌ No videos downloaded. Kick might be blocking us."
-            exit 1
-          fi
-          cd ..
+          python3 << 'EOF'
+          import requests, time, subprocess, os, sys, json
+          username = os.environ['USERNAME']
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'application/json',
+              'Referer': f'https://kick.com/{username}'
+          }
 
-      - name: Commit and push (force add)
+          # Get channel ID
+          channel_url = f'https://kick.com/api/v2/channels/{username}'
+          resp = requests.get(channel_url, headers=headers)
+          if resp.status_code != 200:
+              print(f"❌ Cannot get channel info: {resp.status_code}")
+              sys.exit(1)
+          channel_data = resp.json()
+          channel_id = channel_data.get('id')
+          if not channel_id:
+              print("❌ No channel ID found")
+              sys.exit(1)
+          print(f"✅ Channel ID: {channel_id}")
+
+          # Paginate through VODs
+          page = 1
+          video_urls = []
+          while True:
+              vod_url = f'https://kick.com/api/v2/channels/{channel_id}/videos?page={page}&per_page=30'
+              resp = requests.get(vod_url, headers=headers)
+              if resp.status_code != 200:
+                  break
+              data = resp.json()
+              videos = data.get('data', [])
+              if not videos:
+                  break
+              for video in videos:
+                  vod_id = video.get('id')
+                  title = video.get('title', 'untitled').replace('/', '_')
+                  video_urls.append((vod_id, title))
+              print(f"📄 Page {page} fetched, total VODs found so far: {len(video_urls)}")
+              if len(videos) < 30:
+                  break
+              page += 1
+              time.sleep(1)
+
+          if not video_urls:
+              print("❌ No VODs found for this channel.")
+              sys.exit(1)
+
+          print(f"🎬 Found {len(video_urls)} VODs. Starting download...")
+          for vod_id, title in video_urls:
+              output_file = f"downloads/{title}.mp4"
+              if os.path.exists(output_file) and os.path.getsize(output_file) > 1024*1024:
+                  print(f"⏭️ Skipping {title} (already exists)")
+                  continue
+              # Get the source playlist (m3u8)
+              source_url = f'https://kick.com/api/v2/videos/{vod_id}/source'
+              resp = requests.get(source_url, headers=headers)
+              if resp.status_code != 200:
+                  print(f"⚠️ Could not get source for {title}, skipping")
+                  continue
+              source_data = resp.json()
+              # The API returns an object with "source" field containing the m3u8 URL
+              m3u8 = source_data.get('source')
+              if not m3u8:
+                  print(f"⚠️ No m3u8 found for {title}")
+                  continue
+              # Download with ffmpeg
+              cmd = ['ffmpeg', '-y', '-i', m3u8, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', output_file]
+              print(f"⬇️ Downloading: {title}")
+              result = subprocess.run(cmd, capture_output=True, text=True)
+              if result.returncode != 0:
+                  print(f"❌ ffmpeg error for {title}: {result.stderr[:200]}")
+              else:
+                  print(f"✅ Saved: {output_file}")
+              time.sleep(2)  # be gentle
+          EOF
+          echo "Download process finished."
+
+      - name: Commit and push downloaded files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
