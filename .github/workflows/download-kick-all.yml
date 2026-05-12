@@ -1,23 +1,18 @@
 name: Download All VODs from a Kick.com Channel
 
 on:
-  # فعال‌سازی اجرای دستی (manual) با ورودی نام کاربری
   workflow_dispatch:
     inputs:
       channel:
-        description: 'نام کانال (username) در kick.com'
+        description: 'Kick username (bv: keoxer)'
         required: true
         type: string
-        default: 'keoxer'
-  # اجرا توسط commit message مثل قبل
   push:
     branches:
       - "**"
 
 jobs:
   download-all-kick-vods:
-    # شرط: اگر کار با push است، پیام باید شامل 'kick-all:' باشد
-    # اگر manual trigger باشد، بدون شرط اجرا شود
     if: |
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, 'kick-all:')
@@ -31,46 +26,56 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install yt-dlp
 
-      - name: Install kick-dl
-        run: pip install kick-dl
-
-      - name: Extract username (from commit or manual input)
+      - name: Extract username
         id: get-username
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             USERNAME="${{ github.event.inputs.channel }}"
-            echo "✅ Manual trigger: channel = $USERNAME"
           else
             COMMIT_MSG=$(git log -1 --pretty=%B)
             USERNAME=$(echo "$COMMIT_MSG" | grep -oP 'kick-all:\s*\K.*' | xargs)
             if [ -z "$USERNAME" ]; then
-              echo "❌ No 'kick-all:' found in commit message."
+              echo "❌ No username found."
               exit 1
             fi
-            echo "✅ Commit trigger: channel = $USERNAME"
           fi
           echo "username=$USERNAME" >> $GITHUB_OUTPUT
+          echo "🎯 Username: $USERNAME"
 
-      - name: Download all VODs
+      - name: Download all VODs with yt-dlp
         run: |
           USERNAME="${{ steps.get-username.outputs.username }}"
-          echo "🎯 Downloading all VODs for: $USERNAME"
           mkdir -p downloads
-          # دانلود تمام ویدیوها (اگر خطایی رخ بده، ادامه بده)
-          kick-dl -c "$USERNAME" --download_all -q best -C 3 || echo "⚠️ Download incomplete or no VODs found."
-          # انتقال فایل‌های mp4 به پوشه downloads
-          mv *.mp4 downloads/ 2>/dev/null || echo "No mp4 files to move."
+          cd downloads
+          # Download het volledige kanaal (alle VODs) met yt-dlp
+          # Gebruik een betrouwbare user-agent en accepteer self-signed certs
+          yt-dlp \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            --no-check-certificate \
+            --sleep-interval 5 \
+            --max-sleep-interval 10 \
+            --retries 5 \
+            --continue \
+            --output "%(title)s.%(ext)s" \
+            "https://kick.com/$USERNAME" \
+            || echo "⚠️ yt-dlp failed, trying with referer..."
+          if [ ! "$(ls -A .)" ]; then
+            echo "❌ No videos downloaded. Kick might be blocking us."
+            exit 1
+          fi
+          cd ..
 
-      - name: Commit and push downloaded files
+      - name: Commit and push (force add)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/
+          git add -f downloads/
           if git diff --staged --quiet; then
             echo "No new files to commit."
           else
