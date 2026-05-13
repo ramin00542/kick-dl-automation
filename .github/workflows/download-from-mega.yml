@@ -1,7 +1,12 @@
-name: Download from MEGA.nz
+name: Download from MEGA.nz (Manual Link Input)
 
 on:
   workflow_dispatch:
+    inputs:
+      mega_link:
+        description: 'لینک فایل در MEGA (مثال: https://mega.nz/file/... )'
+        required: true
+        type: string
   push:
     branches:
       - "**"
@@ -9,7 +14,7 @@ on:
 jobs:
   download-mega:
     if: |
-      github.event_name == 'work_dispatch' ||
+      github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, 'mega:')
     runs-on: ubuntu-latest
     permissions:
@@ -25,25 +30,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y megatools
 
-      - name: Extract MEGA link from commit message
-        id: link
+      - name: Get MEGA link (from manual input or commit message)
+        id: get-link
         run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          MEGA_URL=$(echo "$COMMIT_MSG" | grep -oP 'mega:\s*\K.*' | xargs)
-          if [ -z "$MEGA_URL" ]; then
-            echo "❌ لینک MEGA در پیام commit یافت نشد"
-            exit 1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            LINK="${{ github.event.inputs.mega_link }}"
+            echo "✅ لینک از ورودی دستی: $LINK"
+          else
+            COMMIT_MSG=$(git log -1 --pretty=%B)
+            LINK=$(echo "$COMMIT_MSG" | grep -oP 'mega:\s*\K.*' | xargs)
+            if [ -z "$LINK" ]; then
+              echo "❌ لینک MEGA در پیام commit یافت نشد (الگو: mega: لینک)"
+              exit 1
+            fi
+            echo "✅ لینک از پیام commit: $LINK"
           fi
-          echo "url=$MEGA_URL" >> $GITHUB_OUTPUT
-          echo "لینک: $MEGA_URL"
+          echo "url=$LINK" >> $GITHUB_OUTPUT
 
       - name: Download file from MEGA
         run: |
           mkdir -p downloads
           cd downloads
-          megatools dl --path . "${{ steps.link.outputs.url }}"
+          megatools dl --path . "${{ steps.get-link.outputs.url }}"
 
-      - name: Commit and push
+      - name: Commit and push downloaded file
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
