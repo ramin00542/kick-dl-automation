@@ -60,7 +60,7 @@ jobs:
             echo "Mode: $MODE (from commit)"
           fi
 
-          mkdir -p downloads tmp_downloads
+          mkdir -p tmp_downloads downloads/MEGA
 
           # دانلود همه لینک‌ها
           for URL in $URLS; do
@@ -85,27 +85,33 @@ jobs:
             mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
           fi
 
-          # تقسیم فایل‌های بزرگ (بالای 90 مگابایت) با split و ساخت اسکریپت merge
+          # پردازش هر فایل دانلود شده (تقسیم یا کپی و مرتب‌سازی در downloads/MEGA)
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
             LIMIT=$((90 * 1024 * 1024))
             BASENAME=$(basename "$FILE")
 
-            if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks"
-              split -b 90M -d -a 2 "$FILE" "downloads/${BASENAME}.part"
-              PARTS=$(ls downloads/${BASENAME}.part* | wc -l)
-              echo "✅ Created $PARTS parts: downloads/${BASENAME}.part00 ..."
+            # پوشه مقصد: downloads/MEGA/نام_فایل/
+            TARGET_DIR="downloads/MEGA/$BASENAME"
+            mkdir -p "$TARGET_DIR"
 
-              # ساخت اسکریپت merge با استفاده از printf (بدون heredoc برای جلوگیری از خطای YAML)
-              printf '#!/bin/bash\n# بازسازی فایل %s از روی بخش‌ها\ncat "%s.part"* > "%s"\necho "✅ فایل %s بازسازی شد"\n' "$BASENAME" "$BASENAME" "$BASENAME" "$BASENAME" > "downloads/${BASENAME}_merge.sh"
-              chmod +x "downloads/${BASENAME}_merge.sh"
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks in $TARGET_DIR"
+              split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME}.part"
+              PARTS=$(ls "$TARGET_DIR/${BASENAME}.part"* | wc -l)
+              echo "✅ Created $PARTS parts"
+
+              # ساخت اسکریپت merge داخل همان پوشه
+              printf '#!/bin/bash\n# بازسازی فایل %s از روی بخش‌ها\ncat "%s.part"* > "%s"\necho "✅ فایل %s بازسازی شد"\n' "$BASENAME" "$BASENAME" "$BASENAME" "$BASENAME" > "$TARGET_DIR/${BASENAME}_merge.sh"
+              chmod +x "$TARGET_DIR/${BASENAME}_merge.sh"
             else
-              cp "$FILE" "downloads/$BASENAME"
+              echo "📄 Copying $BASENAME to $TARGET_DIR"
+              cp "$FILE" "$TARGET_DIR/$BASENAME"
             fi
           done
 
+          # پاک کردن فایل‌های موقت
           rm -rf tmp_downloads
 
       - name: Commit & Push (single commit)
@@ -124,4 +130,4 @@ jobs:
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
 
-          echo "🎉 All files pushed successfully"
+          echo "🎉 All files pushed successfully in downloads/MEGA/ organized by file name"
