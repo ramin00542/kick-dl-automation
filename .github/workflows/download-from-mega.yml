@@ -62,7 +62,7 @@ jobs:
 
           mkdir -p downloads tmp_downloads
 
-          # پردازش هر URL به صورت مجزا
+          # دانلود همه لینک‌ها
           for URL in $URLS; do
             echo "⬇️ Downloading $URL using megatools"
             cd tmp_downloads
@@ -73,11 +73,11 @@ jobs:
             cd ..
           done
 
-          # بیرون کشیدن همه فایل‌ها از زیرپوشه‌ها
+          # بیرون کشیدن فایل‌ها از زیرپوشه‌ها (برای پوشه‌های MEGA)
           find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
           rm -rf tmp_downloads/*/
 
-          # حالت zip: فقط آرشیو نهایی نگه داشته شود
+          # حالت zip: فقط یک آرشیو نهایی نگه داشته شود
           if [ "$MODE" = "zip" ]; then
             ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
             zip -j "$ARCHIVE_NAME" tmp_downloads/*
@@ -85,7 +85,7 @@ jobs:
             mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
           fi
 
-          # اسپلیت فایل‌های بزرگ با split (نه zip -s)
+          # تقسیم فایل‌های بزرگ (بالای 90 مگابایت) با split و ساخت اسکریپت merge
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
@@ -97,8 +97,9 @@ jobs:
               split -b 90M -d -a 2 "$FILE" "downloads/${BASENAME}.part"
               PARTS=$(ls downloads/${BASENAME}.part* | wc -l)
               echo "✅ Created $PARTS parts: downloads/${BASENAME}.part00 ..."
-              # ایجاد فایل راهنما برای جمع کردن مجدد (بدون Heredoc)
-              printf '#!/bin/bash\n# برای بازسازی فایل اصلی، دستور زیر را اجرا کنید:\ncat %s.part* > %s\n' "$BASENAME" "$BASENAME" > "downloads/${BASENAME}_merge.sh"
+
+              # ساخت اسکریپت merge با استفاده از printf (بدون heredoc برای جلوگیری از خطای YAML)
+              printf '#!/bin/bash\n# بازسازی فایل %s از روی بخش‌ها\ncat "%s.part"* > "%s"\necho "✅ فایل %s بازسازی شد"\n' "$BASENAME" "$BASENAME" "$BASENAME" "$BASENAME" > "downloads/${BASENAME}_merge.sh"
               chmod +x "downloads/${BASENAME}_merge.sh"
             else
               cp "$FILE" "downloads/$BASENAME"
@@ -107,7 +108,7 @@ jobs:
 
           rm -rf tmp_downloads
 
-      - name: Commit & Push (single commit to avoid race condition)
+      - name: Commit & Push (single commit)
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
