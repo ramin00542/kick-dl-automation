@@ -52,13 +52,24 @@ jobs:
           mkdir -p downloads
           cd downloads
           megatools dl --path . "${{ steps.get-link.outputs.url }}"
+          cd ..
 
-      - name: Commit and push downloaded file
+      - name: Check file size and warn if exceeding 100MB
+        run: |
+          FILE_SIZE=$(stat -c%s downloads/* 2>/dev/null | head -1)
+          if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt 104857600 ]; then
+            echo "⚠️ اندازه فایل دانلود شده $(($FILE_SIZE / 1048576)) مگابایت است که از حد مجاز گیت‌هاب (100 مگابایت) بیشتر است."
+            echo "مخزن گیت‌هاب فایل‌های بزرگتر از 100 مگابایت را قبول نمی‌کند. پیشنهاد می‌کنم از Git LFS استفاده کنید یا فایل را در جای دیگری ذخیره کنید."
+            echo "در غیر این صورت، push با خطا مواجه خواهد شد."
+          fi
+
+      - name: Commit and push downloaded file (force add to bypass .gitignore)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ -n "$(ls -A downloads 2>/dev/null)" ]; then
-            git add downloads/
+            # استفاده از -f برای override .gitignore
+            git add -f downloads/
             git commit -m "افزودن فایل دانلود شده از MEGA [skip ci]"
             git pull --rebase origin ${{ github.ref_name }} || true
             git push origin HEAD:${{ github.ref_name }}
