@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mega_link:
-        description: 'لینک فایل در MEGA (مثال: https://mega.nz/file/... )'
+        description: 'لینک فایل یا پوشه در MEGA (چندتا لینک با فاصله مجاز است)'
         required: true
         type: string
       mode:
@@ -44,15 +44,15 @@ jobs:
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MODE="${{ github.event.inputs.mode }}"
-            URL_LINE="${{ github.event.inputs.mega_link }}"
+            URLS="${{ github.event.inputs.mega_link }}"
             echo "Mode: $MODE (manual trigger)"
           else
             if echo "$MSG" | grep -qP 'mega-zip:'; then
               MODE="zip"
-              URL_LINE=$(echo "$MSG" | grep -oP 'mega-zip:\s*\K.*')
+              URLS=$(echo "$MSG" | grep -oP 'mega-zip:\s*\K.*')
             elif echo "$MSG" | grep -qP 'mega:'; then
               MODE="normal"
-              URL_LINE=$(echo "$MSG" | grep -oP 'mega:\s*\K.*')
+              URLS=$(echo "$MSG" | grep -oP 'mega:\s*\K.*')
             else
               echo "❌ No mega command found in commit message"
               exit 1
@@ -62,20 +62,31 @@ jobs:
 
           mkdir -p downloads tmp_downloads
 
-          # دانلود با megatools (لینک ممکنه فاصله داشته باشه؟ فقط یک URL قبول می‌کنیم)
-          # برای سادگی، فقط اولین URL در نظر گرفته می‌شود (می‌تونید چندتا رو هم اضافه کنید)
-          URL=$(echo "$URL_LINE" | awk '{print $1}')
-          echo "⬇️ Downloading $URL using megatools"
-          cd tmp_downloads
-          megatools dl "$URL"
-          cd ..
+          # پردازش هر URL به صورت مجزا
+          for URL in $URLS; do
+            echo "⬇️ Downloading $URL using megatools"
+            cd tmp_downloads
+            if ! megatools dl "$URL"; then
+              echo "❌ Download failed for $URL"
+              exit 1
+            fi
+            cd ..
+          done
 
+          # --- 1. حل مشکل پوشه: همه فایل‌ها را از زیرپوشه‌ها بیرون می‌کشیم ---
+          find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
+          rm -rf tmp_downloads/*/  # حذف پوشه‌های خالی
+
+          # --- 2. حل مشکل zip mode: فقط آرشیو نهایی نگه داشته شود ---
           if [ "$MODE" = "zip" ]; then
             ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
             zip -j "$ARCHIVE_NAME" tmp_downloads/*
+            rm -f tmp_downloads/*  # حذف همه فایل‌های اصلی (فقط زیپ بماند)
+            # اطمینان از وجود فقط یک فایل
+            mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
           fi
 
-          # Split any file over 90MB using zip native split
+          # --- 3. اسپلیت فایل‌های بزرگ با دستور split (نه zip -s) ---
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
@@ -83,9 +94,19 @@ jobs:
             BASENAME=$(basename "$FILE")
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
-              zip -0 -s 90m "downloads/${BASENAME}.zip" -j "$FILE"
-              echo "✅ Parts: $(ls downloads/${BASENAME}* | wc -l)"
+              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks using split..."
+              # split -b 90M -d -a 2 "$FILE" "downloads/${BASENAME}.part"
+              split -b 90M -d -a 2 "$FILE" "downloads/${BASENAME}.part"
+              # تعداد بخش‌های ایجاد شده
+              PARTS=$(ls downloads/${BASENAME}.part* | wc -l)
+              echo "✅ Created $PARTS parts: downloads/${BASENAME}.part00 ..."
+              # ایجاد فایل راهنما برای جمع کردن مجدد
+              cat > "downloads/${BASENAME}_merge.sh" << EOF
+#!/bin/bash
+# برای بازسازی فایل اصلی، این بخش‌ها را با دستور زیر جمع کنید:
+cat ${BASENAME}.part* > ${BASENAME}
+EOF
+              chmod +x "downloads/${BASENAME}_merge.sh"
             else
               cp "$FILE" "downloads/$BASENAME"
             fi
@@ -93,38 +114,21 @@ jobs:
 
           rm -rf tmp_downloads
 
-      - name: Commit & Push in batches of 5 files
+      - name: Commit & Push (single commit to avoid race condition)
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/)
-
-          TOTAL=${#ALL_FILES[@]}
-          echo "📦 Total files to push: $TOTAL"
-
-          if [ "$TOTAL" -eq 0 ]; then
+          # اضافه کردن همه فایل‌های جدید/تغییر یافته در پوشه downloads
+          git add downloads/
+          if git diff --cached --quiet; then
             echo "Nothing to commit"
             exit 0
           fi
 
-          BATCH_SIZE=5
-          BATCH_NUM=0
+          git commit -m "Add files from MEGA ($MODE mode) [skip ci]"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
 
-          for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
-            BATCH_NUM=$(( BATCH_NUM + 1 ))
-            BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
-
-            echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
-
-            git add "${BATCH[@]}"
-            git commit -m "Add downloaded files from MEGA — batch $BATCH_NUM [skip ci]"
-
-            git pull --rebase origin "$BRANCH"
-            git push origin HEAD:"$BRANCH"
-
-            echo "✅ Batch $BATCH_NUM pushed"
-          done
-
-          echo "🎉 All $TOTAL files pushed in $BATCH_NUM batch(es)"
+          echo "🎉 All files pushed successfully"
