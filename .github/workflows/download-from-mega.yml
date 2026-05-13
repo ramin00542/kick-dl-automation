@@ -1,4 +1,4 @@
-name: Download from MEGA & Save to Repo (with LFS)
+name: Download from MEGA & Save to Repo (with LFS, clean)
 
 on:
   workflow_dispatch:
@@ -55,9 +55,13 @@ jobs:
           echo "url=$URL" >> $GITHUB_OUTPUT
           echo "✅ Mode: $MODE, URL: $URL"
 
+      - name: Clean previous downloads (if any)
+        run: |
+          rm -rf downloads
+          mkdir -p downloads
+
       - name: Download file from MEGA
         run: |
-          mkdir -p downloads
           cd downloads
           megatools dl "${{ steps.params.outputs.url }}"
           cd ..
