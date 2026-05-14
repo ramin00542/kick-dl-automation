@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_name:
-        description: 'نام بسته (Package Name) اپلیکیشن مورد نظر'
+        description: 'نام بسته (Package Name) اپلیکیشن'
         required: true
         default: 'com.instagram.android'
         type: string
@@ -33,13 +33,25 @@ jobs:
           cd PlayRetrieve
           python PlayRetrieve.py -p ${{ inputs.package_name }} --arch arm64-v8a --device phone
 
-      - name: انتقال فایل به پوشه downloads
+      - name: ایجاد ساختار پوشه‌ها و انتقال فایل
         run: |
-          mkdir -p downloads
-          # پیدا کردن تمام فایل‌های apk/xapk/apks در کل درخت PlayRetrieve
-          find PlayRetrieve -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apks" \) -exec cp -v {} downloads/ \;
+          # نام بسته (مثلاً com.instagram.android) را به عنوان نام زیرپوشه می‌گیریم
+          APP_NAME="${{ inputs.package_name }}"
+          # پوشه نهایی: downloads/Google Play/ com.instagram.android /
+          TARGET_DIR="downloads/Google Play/${APP_NAME}"
+          mkdir -p "${TARGET_DIR}"
+          
+          # پیدا کردن فایل دانلود شده (apk/xapk/apks) و انتقال به پوشه هدف
+          DOWNLOADED_FILE=$(find PlayRetrieve -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apks" \) | head -n 1)
+          if [ -f "$DOWNLOADED_FILE" ]; then
+            mv -v "$DOWNLOADED_FILE" "${TARGET_DIR}/"
+            echo "فایل به ${TARGET_DIR} منتقل شد."
+          else
+            echo "هیچ فایل APK یافت نشد!"
+            exit 1
+          fi
 
-      - name: بارگذاری فایل به عنوان Artifact
+      - name: بارگذاری کل پوشه downloads به عنوان Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.package_name }}
