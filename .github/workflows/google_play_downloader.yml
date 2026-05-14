@@ -1,0 +1,47 @@
+name: Download APK from Google Play
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'نام بسته (مثل com.example.app)'
+        required: true
+        type: string
+      file_password:
+        description: 'رمز فایل APK (در صورت نیاز)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  download-apk:
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gplaycli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install gplaycli
+      - name: Setup credentials
+        run: |
+          echo "${{ secrets.GPLAYCLI_CONF }}" > gplaycli.conf
+      - name: Download APK
+        run: |
+          mkdir -p downloads/GooglePlay
+          gplaycli -c gplaycli.conf -d "${{ github.event.inputs.package_name }}" -o downloads/GooglePlay/
+      - name: Split if large and create merge scripts
+        run: |
+          # همان منطق تقسیم فایل و ساخت merge.bat و ... که قبلاً داشتیم
+          # ...
+      - name: Commit & Push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add downloads/
+          git commit -m "Add APK from Google Play [skip ci]" || true
+          git push
