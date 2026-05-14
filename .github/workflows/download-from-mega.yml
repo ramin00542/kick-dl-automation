@@ -21,6 +21,8 @@ on:
 
 jobs:
   save-file:
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # رفع اخطار Node.js 20
     if: |
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, 'mega:') ||
@@ -62,7 +64,7 @@ jobs:
 
           mkdir -p tmp_downloads downloads/MEGA
 
-          # دانلود همه لینک‌ها
+          # Download all URLs
           for URL in $URLS; do
             echo "⬇️ Downloading $URL using megatools"
             cd tmp_downloads
@@ -73,11 +75,11 @@ jobs:
             cd ..
           done
 
-          # بیرون کشیدن فایل‌ها از زیرپوشه‌ها (برای پوشه‌های MEGA)
+          # Flatten subfolders (for MEGA folder links)
           find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
           rm -rf tmp_downloads/*/
 
-          # حالت zip: فقط یک آرشیو نهایی نگه داشته شود
+          # Zip mode: keep only final archive
           if [ "$MODE" = "zip" ]; then
             ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
             zip -j "$ARCHIVE_NAME" tmp_downloads/*
@@ -85,33 +87,77 @@ jobs:
             mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
           fi
 
-          # پردازش هر فایل دانلود شده (تقسیم یا کپی و مرتب‌سازی در downloads/MEGA)
+          # Process each downloaded file
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
             LIMIT=$((90 * 1024 * 1024))
             BASENAME=$(basename "$FILE")
 
-            # پوشه مقصد: downloads/MEGA/نام_فایل/
             TARGET_DIR="downloads/MEGA/$BASENAME"
             mkdir -p "$TARGET_DIR"
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks in $TARGET_DIR"
               split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME}.part"
-              PARTS=$(ls "$TARGET_DIR/${BASENAME}.part"* | wc -l)
-              echo "✅ Created $PARTS parts"
 
-              # ساخت اسکریپت merge داخل همان پوشه
-              printf '#!/bin/bash\n# بازسازی فایل %s از روی بخش‌ها\ncat "%s.part"* > "%s"\necho "✅ فایل %s بازسازی شد"\n' "$BASENAME" "$BASENAME" "$BASENAME" "$BASENAME" > "$TARGET_DIR/${BASENAME}_merge.sh"
-              chmod +x "$TARGET_DIR/${BASENAME}_merge.sh"
+              # --- Create merge scripts (no heredoc) ---
+              # 1. Windows .bat (double-click)
+              printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
+              printf 'echo Reconstructing %s ...\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
+              printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.bat"
+              printf 'if errorlevel 1 (\r\n' >> "$TARGET_DIR/merge.bat"
+              printf '  echo ❌ Error: Failed to reconstruct %s\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
+              printf '  pause\r\n' >> "$TARGET_DIR/merge.bat"
+              printf '  exit /b 1\r\n' >> "$TARGET_DIR/merge.bat"
+              printf ')\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'echo ✅ File %s reconstructed successfully.\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
+              printf 'pause\r\n' >> "$TARGET_DIR/merge.bat"
+
+              # 2. macOS .command (double-click opens Terminal)
+              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
+              printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.command"
+              printf 'echo "Reconstructing %s ..."\n' "$BASENAME" >> "$TARGET_DIR/merge.command"
+              printf 'cat "%s.part"* > "%s"\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.command"
+              printf 'if [ $? -eq 0 ]; then\n' >> "$TARGET_DIR/merge.command"
+              printf '  echo "✅ File %s reconstructed successfully."\n' "$BASENAME" >> "$TARGET_DIR/merge.command"
+              printf 'else\n' >> "$TARGET_DIR/merge.command"
+              printf '  echo "❌ Error: Failed to reconstruct %s"\n' "$BASENAME" >> "$TARGET_DIR/merge.command"
+              printf '  exit 1\n' >> "$TARGET_DIR/merge.command"
+              printf 'fi\n' >> "$TARGET_DIR/merge.command"
+              printf 'echo "Press any key to close..."\n' >> "$TARGET_DIR/merge.command"
+              printf 'read -n 1\n' >> "$TARGET_DIR/merge.command"
+              chmod +x "$TARGET_DIR/merge.command"
+
+              # 3. Linux/Unix .sh (terminal)
+              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
+              printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.sh"
+              printf 'cat "%s.part"* > "%s"\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.sh"
+              printf 'echo "✅ %s reconstructed"\n' "$BASENAME" >> "$TARGET_DIR/merge.sh"
+              chmod +x "$TARGET_DIR/merge.sh"
+
             else
               echo "📄 Copying $BASENAME to $TARGET_DIR"
               cp "$FILE" "$TARGET_DIR/$BASENAME"
             fi
           done
 
-          # پاک کردن فایل‌های موقت
+          # --- Master reconstruct script for Unix (reconstruct all at once) ---
+          MASTER_SCRIPT="downloads/MEGA/reconstruct_all.sh"
+          printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
+          printf 'set -e\n' >> "$MASTER_SCRIPT"
+          printf 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n' >> "$MASTER_SCRIPT"
+          printf 'cd "$SCRIPT_DIR"\n' >> "$MASTER_SCRIPT"
+          printf 'echo "🔍 Scanning for folders containing split files..."\n' >> "$MASTER_SCRIPT"
+          printf 'for dir in */; do\n' >> "$MASTER_SCRIPT"
+          printf '    if [ -d "$dir" ] && [ -f "$dir/merge.sh" ]; then\n' >> "$MASTER_SCRIPT"
+          printf '        echo "🔄 Reconstructing in $dir"\n' >> "$MASTER_SCRIPT"
+          printf '        (cd "$dir" && bash merge.sh)\n' >> "$MASTER_SCRIPT"
+          printf '    fi\n' >> "$MASTER_SCRIPT"
+          printf 'done\n' >> "$MASTER_SCRIPT"
+          printf 'echo "✅ All files reconstructed successfully."\n' >> "$MASTER_SCRIPT"
+          chmod +x "$MASTER_SCRIPT"
+
           rm -rf tmp_downloads
 
       - name: Commit & Push (single commit)
