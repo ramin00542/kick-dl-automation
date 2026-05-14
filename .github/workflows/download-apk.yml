@@ -1,4 +1,4 @@
-name: دانلود هر اپلیکیشن از گوگل پلی
+name: دانلود هر اپلیکیشن از گوگل پلی (apkeep)
 
 on:
   workflow_dispatch:
@@ -17,22 +17,16 @@ jobs:
       - name: دریافت کد مخزن
         uses: actions/checkout@v4
 
-      - name: نصب Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: دانلود و نصب PlayRetrieve
+      - name: نصب apkeep
         run: |
-          git clone https://github.com/MuhammadKhizerJaved/PlayRetrieve.git
-          cd PlayRetrieve
-          pip install -r requirements.txt
+          wget -O apkeep https://github.com/EFForg/apkeep/releases/download/0.14.0/apkeep-x86_64-unknown-linux-gnu
+          chmod +x apkeep
+          sudo mv apkeep /usr/local/bin/
 
-      - name: استخراج شناسه بسته از لینک (اگر کاربر لینک کامل داده باشد)
+      - name: استخراج نام بسته (اگر کاربر لینک داده باشد)
         id: extract
         run: |
           INPUT="${{ inputs.package_name }}"
-          # حذف فاصله‌ها و کاراکترهای اضافی
           INPUT=$(echo "$INPUT" | xargs)
           if [[ "$INPUT" == *"play.google.com"* ]]; then
             PACKAGE=$(echo "$INPUT" | grep -oP '(?<=id=)[^&?]+')
@@ -42,27 +36,26 @@ jobs:
           echo "package=$PACKAGE" >> $GITHUB_OUTPUT
           echo "Extracted package: $PACKAGE"
 
-      - name: دانلود APK
+      - name: دریافت توکن ناشناس از AuroraOSS
         run: |
-          cd PlayRetrieve
-          python PlayRetrieve.py -p ${{ steps.extract.outputs.package }} --arch arm64-v8a --device phone
+          curl -s 'https://auroraoss.com/api/auth' -H 'Content-Type: application/json' --data-raw '{"email":"","device":"Pixel 6"}' > auth.json
+          TOKEN=$(jq -r '.token' auth.json)
+          echo "AUTH_TOKEN=$TOKEN" >> $GITHUB_ENV
 
-      - name: ایجاد ساختار پوشه‌ها و انتقال فایل
+      - name: دانلود APK با apkeep
+        run: |
+          mkdir -p downloads
+          apkeep -a ${{ steps.extract.outputs.package }} -d downloads --token "${{ env.AUTH_TOKEN }}"
+
+      - name: ایجاد ساختار پوشه Google Play/نام برنامه
         run: |
           APP_NAME="${{ steps.extract.outputs.package }}"
           TARGET_DIR="downloads/Google Play/${APP_NAME}"
           mkdir -p "${TARGET_DIR}"
-          
-          DOWNLOADED_FILE=$(find PlayRetrieve -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apks" \) | head -n 1)
-          if [ -f "$DOWNLOADED_FILE" ]; then
-            mv -v "$DOWNLOADED_FILE" "${TARGET_DIR}/"
-            echo "فایل به ${TARGET_DIR} منتقل شد."
-          else
-            echo "هیچ فایل APK یافت نشد!"
-            exit 1
-          fi
+          # جابجایی فایل دانلود شده (پسوند apk یا xapk)
+          find downloads -maxdepth 1 -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apks" \) -exec mv -v {} "${TARGET_DIR}/" \;
 
-      - name: بارگذاری کل پوشه downloads به عنوان Artifact
+      - name: بارگذاری فایل به عنوان Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.extract.outputs.package }}
