@@ -15,6 +15,11 @@ on:
         options:
           - normal
           - zip
+      password:
+        description: 'رمز (پسورد) فایل یا لینک MEGA (در صورت نیاز)'
+        required: false
+        default: ''
+        type: string
   push:
     branches:
       - "**"
@@ -22,7 +27,7 @@ on:
 jobs:
   save-file:
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # رفع اخطار Node.js 20
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     if: |
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, 'mega:') ||
@@ -47,8 +52,13 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MODE="${{ github.event.inputs.mode }}"
             URLS="${{ github.event.inputs.mega_link }}"
+            PASSWORD="${{ github.event.inputs.password }}"
             echo "Mode: $MODE (manual trigger)"
+            if [ -n "$PASSWORD" ]; then
+              echo "Password provided (will be used for download)"
+            fi
           else
+            # از commit message رمز خوانده نمی‌شود، فقط حالت و لینک
             if echo "$MSG" | grep -qP 'mega-zip:'; then
               MODE="zip"
               URLS=$(echo "$MSG" | grep -oP 'mega-zip:\s*\K.*')
@@ -59,7 +69,8 @@ jobs:
               echo "❌ No mega command found in commit message"
               exit 1
             fi
-            echo "Mode: $MODE (from commit)"
+            PASSWORD=""
+            echo "Mode: $MODE (from commit, no password)"
           fi
 
           mkdir -p tmp_downloads downloads/MEGA
@@ -68,9 +79,17 @@ jobs:
           for URL in $URLS; do
             echo "⬇️ Downloading $URL using megatools"
             cd tmp_downloads
-            if ! megatools dl "$URL"; then
-              echo "❌ Download failed for $URL"
-              exit 1
+            # اگر رمز وجود داشت، با --password استفاده کن
+            if [ -n "$PASSWORD" ]; then
+              if ! megatools dl --password "$PASSWORD" "$URL"; then
+                echo "❌ Download failed for $URL (maybe wrong password?)"
+                exit 1
+              fi
+            else
+              if ! megatools dl "$URL"; then
+                echo "❌ Download failed for $URL"
+                exit 1
+              fi
             fi
             cd ..
           done
@@ -97,12 +116,17 @@ jobs:
             TARGET_DIR="downloads/MEGA/$BASENAME"
             mkdir -p "$TARGET_DIR"
 
+            # اگر رمز وجود داشت، یک فایل متنی با رمز داخل پوشه قرار بده
+            if [ -n "$PASSWORD" ]; then
+              echo "This file/folder password: $PASSWORD" > "$TARGET_DIR/password.txt"
+            fi
+
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks in $TARGET_DIR"
               split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME}.part"
 
-              # --- Create merge scripts (no heredoc) ---
-              # 1. Windows .bat (double-click)
+              # --- Create merge scripts ---
+              # Windows .bat
               printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
               printf 'echo Reconstructing %s ...\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
               printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.bat"
@@ -114,7 +138,7 @@ jobs:
               printf 'echo ✅ File %s reconstructed successfully.\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
               printf 'pause\r\n' >> "$TARGET_DIR/merge.bat"
 
-              # 2. macOS .command (double-click opens Terminal)
+              # macOS .command
               printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
               printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.command"
               printf 'echo "Reconstructing %s ..."\n' "$BASENAME" >> "$TARGET_DIR/merge.command"
@@ -129,7 +153,7 @@ jobs:
               printf 'read -n 1\n' >> "$TARGET_DIR/merge.command"
               chmod +x "$TARGET_DIR/merge.command"
 
-              # 3. Linux/Unix .sh (terminal)
+              # Linux .sh
               printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
               printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.sh"
               printf 'cat "%s.part"* > "%s"\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.sh"
@@ -142,7 +166,7 @@ jobs:
             fi
           done
 
-          # --- Master reconstruct script for Unix (reconstruct all at once) ---
+          # Master reconstruct script for Unix
           MASTER_SCRIPT="downloads/MEGA/reconstruct_all.sh"
           printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
           printf 'set -e\n' >> "$MASTER_SCRIPT"
