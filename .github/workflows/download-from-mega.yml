@@ -15,8 +15,13 @@ on:
         options:
           - normal
           - zip
-      password:
-        description: 'رمز (پسورد) فایل یا لینک MEGA (در صورت نیاز)'
+      link_password:
+        description: 'رمز لینک MEGA (در صورت نیاز)'
+        required: false
+        default: ''
+        type: string
+      file_password:
+        description: 'رمز (پسورد) خود فایل (مثلاً رمز ZIP) - در فایل password.txt ذخیره می‌شود'
         required: false
         default: ''
         type: string
@@ -52,13 +57,16 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MODE="${{ github.event.inputs.mode }}"
             URLS="${{ github.event.inputs.mega_link }}"
-            PASSWORD="${{ github.event.inputs.password }}"
+            LINK_PASS="${{ github.event.inputs.link_password }}"
+            FILE_PASS="${{ github.event.inputs.file_password }}"
             echo "Mode: $MODE (manual trigger)"
-            if [ -n "$PASSWORD" ]; then
-              echo "Password provided (will be used for download)"
+            if [ -n "$LINK_PASS" ]; then
+              echo "Link password provided (will be used for download)"
+            fi
+            if [ -n "$FILE_PASS" ]; then
+              echo "File password provided (will be saved as info)"
             fi
           else
-            # از commit message رمز خوانده نمی‌شود، فقط حالت و لینک
             if echo "$MSG" | grep -qP 'mega-zip:'; then
               MODE="zip"
               URLS=$(echo "$MSG" | grep -oP 'mega-zip:\s*\K.*')
@@ -69,20 +77,20 @@ jobs:
               echo "❌ No mega command found in commit message"
               exit 1
             fi
-            PASSWORD=""
-            echo "Mode: $MODE (from commit, no password)"
+            LINK_PASS=""
+            FILE_PASS=""
+            echo "Mode: $MODE (from commit, no passwords)"
           fi
 
           mkdir -p tmp_downloads downloads/MEGA
 
-          # Download all URLs
+          # دانلود همه لینک‌ها
           for URL in $URLS; do
             echo "⬇️ Downloading $URL using megatools"
             cd tmp_downloads
-            # اگر رمز وجود داشت، با --password استفاده کن
-            if [ -n "$PASSWORD" ]; then
-              if ! megatools dl --password "$PASSWORD" "$URL"; then
-                echo "❌ Download failed for $URL (maybe wrong password?)"
+            if [ -n "$LINK_PASS" ]; then
+              if ! megatools dl --password "$LINK_PASS" "$URL"; then
+                echo "❌ Download failed for $URL (maybe wrong link password?)"
                 exit 1
               fi
             else
@@ -94,11 +102,11 @@ jobs:
             cd ..
           done
 
-          # Flatten subfolders (for MEGA folder links)
+          # بیرون کشیدن فایل‌ها از زیرپوشه‌ها (برای پوشه‌های MEGA)
           find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
           rm -rf tmp_downloads/*/
 
-          # Zip mode: keep only final archive
+          # حالت zip: فقط یک آرشیو نهایی نگه داشته شود
           if [ "$MODE" = "zip" ]; then
             ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
             zip -j "$ARCHIVE_NAME" tmp_downloads/*
@@ -106,7 +114,7 @@ jobs:
             mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
           fi
 
-          # Process each downloaded file
+          # پردازش هر فایل دانلود شده
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
@@ -116,16 +124,22 @@ jobs:
             TARGET_DIR="downloads/MEGA/$BASENAME"
             mkdir -p "$TARGET_DIR"
 
-            # اگر رمز وجود داشت، یک فایل متنی با رمز داخل پوشه قرار بده
-            if [ -n "$PASSWORD" ]; then
-              echo "This file/folder password: $PASSWORD" > "$TARGET_DIR/password.txt"
+            # ذخیره رمزهای موجود در یک فایل متنی
+            if [ -n "$LINK_PASS" ] || [ -n "$FILE_PASS" ]; then
+              echo "--- Password Info ---" > "$TARGET_DIR/password.txt"
+              if [ -n "$LINK_PASS" ]; then
+                echo "MEGA link password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
+              fi
+              if [ -n "$FILE_PASS" ]; then
+                echo "File password (e.g., ZIP password): $FILE_PASS" >> "$TARGET_DIR/password.txt"
+              fi
             fi
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks in $TARGET_DIR"
               split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME}.part"
 
-              # --- Create merge scripts ---
+              # --- ساخت اسکریپت‌های merge ---
               # Windows .bat
               printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
               printf 'echo Reconstructing %s ...\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
@@ -166,7 +180,7 @@ jobs:
             fi
           done
 
-          # Master reconstruct script for Unix
+          # اسکریپت اصلی بازسازی یکجا
           MASTER_SCRIPT="downloads/MEGA/reconstruct_all.sh"
           printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
           printf 'set -e\n' >> "$MASTER_SCRIPT"
