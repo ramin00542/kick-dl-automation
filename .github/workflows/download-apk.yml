@@ -1,0 +1,44 @@
+name: دانلود هر اپلیکیشن از گوگل پلی
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'نام بسته (Package Name) اپلیکیشن مورد نظر'
+        required: true
+        default: 'com.instagram.android'
+        type: string
+
+jobs:
+  download-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: دریافت کد مخزن
+        uses: actions/checkout@v4
+
+      - name: نصب Python و کتابخانه‌های مورد نیاز
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: دانلود و راه‌اندازی ابزار PlayRetrieve
+        run: |
+          git clone https://github.com/MuhammadKhizerJaved/PlayRetrieve.git
+          cd PlayRetrieve
+          pip install -r requirements.txt
+
+      - name: دانلود فایل APK برنامه
+        run: |
+          cd PlayRetrieve
+          mkdir -p ../downloads
+          # استفاده از نام بسته وارد شده توسط کاربر
+          python PlayRetrieve.py -p ${{ inputs.package_name }} --arch arm64-v8a --device phone
+          # انتقال فایل دانلود شده به پوشه خروجی
+          mv *.apk *.xapk *.apks ../downloads/ 2>/dev/null || true
+
+      - name: بارگذاری فایل APK به عنوان خروجی (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}
+          path: downloads/
