@@ -1,0 +1,310 @@
+name: Download (Split if Needed) & Upload to File Hosts
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'لینک فایل (یا چند لینک با فاصله)'
+        required: true
+        type: string
+      mode:
+        description: 'حالت دانلود (normal یا zip)'
+        default: 'normal'
+        type: choice
+        options:
+          - normal
+          - zip
+      link_password:
+        description: 'رمز لینک (HTTP Basic Auth) - اختیاری'
+        required: false
+        type: string
+      file_password:
+        description: 'رمز داخلی فایل (در password.txt ذخیره می‌شود) - اختیاری'
+        required: false
+        type: string
+      target_sites:
+        description: 'سایت‌های مقصد برای آپلود (با کاما جدا کنید)'
+        required: true
+        type: string
+        default: 'nixfile.com'
+      credentials:
+        description: |
+          اعتبارنامه سایت‌ها – هر خط به فرمت:
+          site:username:password   یا   site:guest
+          مثال:
+          nixfile.com:myuser:mypass
+          starupload.lol:guest
+        required: false
+        type: string
+        default: ''
+  push:
+    branches:
+      - "**"
+
+jobs:
+  process:
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'github:') ||
+      contains(github.event.head_commit.message, 'github-zip:')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl zip unzip chromium-browser chromium-chromedriver
+          pip install selenium webdriver-manager
+
+      - name: Download, Split & Prepare Files
+        run: |
+          MSG=$(git log -1 --pretty=%B)
+          echo "Commit message: $MSG"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ github.event.inputs.mode }}"
+            URLS="${{ github.event.inputs.url }}"
+            LINK_PASS="${{ github.event.inputs.link_password }}"
+            FILE_PASS="${{ github.event.inputs.file_password }}"
+            echo "Mode: $MODE (manual trigger)"
+          else
+            if echo "$MSG" | grep -qP 'github-zip:'; then
+              MODE="zip"
+              URLS=$(echo "$MSG" | grep -oP 'github-zip:\s*\K.*')
+            elif echo "$MSG" | grep -qP 'github:'; then
+              MODE="normal"
+              URLS=$(echo "$MSG" | grep -oP 'github:\s*\K.*')
+            else
+              echo "❌ No github command found in commit message"
+              exit 1
+            fi
+            LINK_PASS=""
+            FILE_PASS=""
+            echo "Mode: $MODE (from commit)"
+          fi
+
+          mkdir -p tmp_downloads downloads
+
+          # Download each URL
+          for URL in $URLS; do
+            echo "⬇️ Downloading $URL"
+            cd tmp_downloads
+            if [ -n "$LINK_PASS" ]; then
+              if [[ "$LINK_PASS" == *:* ]]; then
+                USER="${LINK_PASS%%:*}"
+                PASS="${LINK_PASS#*:}"
+                curl -L -u "$USER:$PASS" -O "$URL"
+              else
+                curl -L -O "$URL"
+              fi
+            else
+              curl -L -O "$URL"
+            fi
+            cd ..
+          done
+
+          # Flatten: move all files to tmp_downloads root
+          find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
+          rm -rf tmp_downloads/*/
+
+          # Zip mode: combine all into one archive
+          if [ "$MODE" = "zip" ]; then
+            ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
+            zip -j "$ARCHIVE_NAME" tmp_downloads/*
+            rm -f tmp_downloads/*
+            mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
+          fi
+
+          # Process each downloaded file: split if >90MB, create merge scripts
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$((90 * 1024 * 1024))
+            BASENAME=$(basename "$FILE")
+            BASENAME_CLEAN="${BASENAME%%\?*}"
+            TARGET_DIR="downloads/${BASENAME_CLEAN}"
+            mkdir -p "$TARGET_DIR"
+
+            if [ -n "$LINK_PASS" ] || [ -n "$FILE_PASS" ]; then
+              echo "--- Password Info ---" > "$TARGET_DIR/password.txt"
+              [ -n "$LINK_PASS" ] && echo "Download password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
+              [ -n "$FILE_PASS" ] && echo "File password (e.g., ZIP password): $FILE_PASS" >> "$TARGET_DIR/password.txt"
+            fi
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ $BASENAME_CLEAN is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks"
+              split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
+
+              # Create merge scripts
+              printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
+              printf 'echo Reconstructing %s ...\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
+              printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
+              printf 'if errorlevel 1 (\r\n' >> "$TARGET_DIR/merge.bat"
+              printf '  echo ❌ Error\r\n' >> "$TARGET_DIR/merge.bat"
+              printf '  pause\r\n' >> "$TARGET_DIR/merge.bat"
+              printf '  exit /b 1\r\n' >> "$TARGET_DIR/merge.bat"
+              printf ')\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'echo ✅ File %s reconstructed\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
+              printf 'pause\r\n' >> "$TARGET_DIR/merge.bat"
+
+              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
+              printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.command"
+              printf 'cat "%s.part"* > "%s"\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.command"
+              printf 'echo "✅ %s reconstructed"\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.command"
+              printf 'read -p "Press any key..."\n' >> "$TARGET_DIR/merge.command"
+              chmod +x "$TARGET_DIR/merge.command"
+
+              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
+              printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.sh"
+              printf 'cat "%s.part"* > "%s"\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.sh"
+              printf 'echo "✅ %s reconstructed"\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.sh"
+              chmod +x "$TARGET_DIR/merge.sh"
+
+            else
+              echo "📄 Copying $BASENAME_CLEAN"
+              cp "$FILE" "$TARGET_DIR/$BASENAME_CLEAN"
+            fi
+          done
+
+          # Master reconstruct script
+          MASTER_SCRIPT="downloads/reconstruct_all.sh"
+          printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
+          printf 'for dir in */; do\n' >> "$MASTER_SCRIPT"
+          printf '    [ -f "$dir/merge.sh" ] && (cd "$dir" && bash merge.sh)\n' >> "$MASTER_SCRIPT"
+          printf 'done\n' >> "$MASTER_SCRIPT"
+          printf 'echo "All done"\n' >> "$MASTER_SCRIPT"
+          chmod +x "$MASTER_SCRIPT"
+
+          # Save list of downloaded files (for upload)
+          find downloads -type f ! -name "*.bat" ! -name "*.command" ! -name "*.sh" ! -name "password.txt" > downloaded_files.txt
+          rm -rf tmp_downloads
+
+      - name: Create upload script
+        run: |
+          cat > upload_to_sites.py << 'EOF'
+          import os
+          import sys
+          import time
+          import argparse
+          from selenium import webdriver
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.support.ui import WebDriverWait
+          from selenium.webdriver.support import expected_conditions as EC
+
+          def parse_credentials(creds_str, target_sites_list):
+              creds_dict = {}
+              if not creds_str:
+                  return creds_dict
+              for line in creds_str.strip().split('\n'):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  parts = line.split(':')
+                  if len(parts) == 2 and parts[1].lower() == 'guest':
+                      creds_dict[parts[0]] = {'guest': True}
+                  elif len(parts) == 3:
+                      site, user, pwd = parts
+                      creds_dict[site] = {'username': user, 'password': pwd}
+                  else:
+                      print(f"⚠️ Invalid credentials line: {line}")
+              for site in target_sites_list:
+                  if site not in creds_dict:
+                      creds_dict[site] = {'guest': True}
+              return creds_dict
+
+          def upload_to_nixfile(driver, file_path, creds):
+              driver.get("https://nixfile.com/")
+              if not creds.get('guest', False):
+                  driver.find_element(By.LINK_TEXT, "ورود").click()
+                  WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
+                  driver.find_element(By.NAME, "username").send_keys(creds['username'])
+                  driver.find_element(By.NAME, "password").send_keys(creds['password'])
+                  driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+                  time.sleep(3)
+              upload_input = driver.find_element(By.CSS_SELECTOR, "input[type='file']")
+              upload_input.send_keys(os.path.abspath(file_path))
+              time.sleep(2)
+              try:
+                  upload_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Upload')]")
+                  upload_btn.click()
+              except:
+                  pass
+              wait = WebDriverWait(driver, 120)
+              link_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.download-link")))
+              return link_elem.get_attribute("href")
+
+          def upload_to_generic(driver, file_path, creds, site_name):
+              return f"Unsupported site: {site_name}"
+
+          UPLOAD_FUNCS = {
+              "nixfile.com": upload_to_nixfile,
+          }
+
+          def main():
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--file", required=True)
+              parser.add_argument("--sites", required=True)
+              parser.add_argument("--creds", default="")
+              args = parser.parse_args()
+
+              sites = [s.strip() for s in args.sites.split(",")]
+              creds_dict = parse_credentials(args.creds, sites)
+
+              options = webdriver.ChromeOptions()
+              options.add_argument("--headless")
+              options.add_argument("--no-sandbox")
+              options.add_argument("--disable-dev-shm-usage")
+              driver = webdriver.Chrome(options=options)
+
+              results = {}
+              for site in sites:
+                  print(f"\n📤 Uploading to {site} ...")
+                  func = UPLOAD_FUNCS.get(site, upload_to_generic)
+                  try:
+                      link = func(driver, args.file, creds_dict.get(site, {'guest': True}))
+                      results[site] = link
+                      print(f"✅ {site} -> {link}")
+                  except Exception as e:
+                      results[site] = f"Error: {str(e)}"
+                      print(f"❌ {site} failed: {e}")
+
+              driver.quit()
+              with open("upload_results.txt", "w", encoding="utf-8") as f:
+                  for site, link in results.items():
+                      f.write(f"{site}: {link}\n")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+      - name: Upload to selected sites
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.target_sites != ''
+        env:
+          TARGET_SITES: ${{ github.event.inputs.target_sites }}
+          CREDENTIALS: ${{ github.event.inputs.credentials }}
+        run: |
+          # Find first actual file (not script) in downloads folder
+          FIRST_FILE=$(find downloads -type f ! -name "*.bat" ! -name "*.command" ! -name "*.sh" ! -name "password.txt" ! -name "reconstruct_all.sh" | head -1)
+          if [ -z "$FIRST_FILE" ]; then
+            echo "No downloadable file found to upload"
+            exit 1
+          fi
+          echo "Uploading file: $FIRST_FILE"
+          python upload_to_sites.py --file "$FIRST_FILE" --sites "$TARGET_SITES" --creds "$CREDENTIALS"
+
+      - name: Commit & Push (download results and upload results)
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add downloads/ upload_results.txt 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "Download and upload results [skip ci]"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push
