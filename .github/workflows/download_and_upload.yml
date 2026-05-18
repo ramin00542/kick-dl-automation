@@ -27,6 +27,14 @@ on:
         required: true
         type: string
         default: 'erfanzadeh.ir'
+      upload_mode:
+        description: 'حالت آپلود (تک فایل کامل یا تکه تکه)'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - parts
       credentials:
         description: |
           اعتبارنامه سایت‌ها – هر خط به فرمت:
@@ -56,8 +64,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # در صورت fork، از PAT استفاده کنید:
-          # token: ${{ secrets.MY_PAT }}
 
       - name: Create log directory
         run: |
@@ -67,12 +73,26 @@ jobs:
           echo "Starting workflow at $(date)" | tee -a "$LOG_FILE"
           echo "Event: ${{ github.event_name }}" | tee -a "$LOG_FILE"
 
-      - name: Install dependencies
+      - name: Install dependencies (Google Chrome + chromedriver + megatools)
         run: |
           set -e -x
           exec > >(tee -a "$LOG_FILE") 2>&1
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip chromium-browser chromium-chromedriver megatools
+          sudo apt-get install -y curl zip unzip wget
+          # نصب Google Chrome
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          # نصب chromedriver متناسب با نسخه کروم
+          CHROME_VERSION=$(google-chrome-stable --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
+          unzip chromedriver-linux64.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          sudo chmod +x /usr/local/bin/chromedriver
+          rm -rf chromedriver-linux64*
+          # نصب megatools
+          sudo apt-get install -y megatools
           pip install selenium webdriver-manager
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
@@ -120,7 +140,6 @@ jobs:
                 exit 1
               fi
             else
-              # Normal download with curl
               if [ -n "$LINK_PASS" ]; then
                 if [[ "$LINK_PASS" == *:* ]]; then
                   USER="${LINK_PASS%%:*}"
@@ -158,7 +177,6 @@ jobs:
             TARGET_DIR="downloads/${BASENAME_CLEAN}"
             mkdir -p "$TARGET_DIR"
 
-            # Save passwords if provided
             if [ -n "$LINK_PASS" ] || [ -n "$FILE_PASS" ]; then
               echo "--- Password Info ---" > "$TARGET_DIR/password.txt"
               [ -n "$LINK_PASS" ] && echo "Download password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
@@ -168,12 +186,10 @@ jobs:
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME_CLEAN is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks"
               split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
-
-              # Reconstruct full file from parts (for upload)
               echo "🔁 Reconstructing full file from parts (for upload)..."
               cat "$TARGET_DIR/${BASENAME_CLEAN}.part"* > "$TARGET_DIR/${BASENAME_CLEAN}.full"
 
-              # Create merge scripts (Windows, macOS, Linux)
+              # Create merge scripts
               printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
               printf 'echo Reconstructing %s ...\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
               printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
@@ -200,12 +216,10 @@ jobs:
             else
               echo "📄 Copying $BASENAME_CLEAN (small file)"
               cp "$FILE" "$TARGET_DIR/$BASENAME_CLEAN"
-              # Also create .full copy for consistent upload
               cp "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.full"
             fi
           done
 
-          # Master reconstruct script
           MASTER_SCRIPT="downloads/reconstruct_all.sh"
           printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
           printf 'for dir in */; do\n' >> "$MASTER_SCRIPT"
@@ -256,9 +270,6 @@ jobs:
               return creds_dict
 
           def upload_to_erfanzadeh(driver, file_path, creds):
-              """
-              آپلود فایل به erfanzadeh.ir (HTTP Basic Auth: admin/admin)
-              """
               if not creds.get('guest', False):
                   username = creds.get('username', 'admin')
                   password = creds.get('password', 'admin')
@@ -266,52 +277,34 @@ jobs:
                   username = 'admin'
                   password = 'admin'
 
-              # استفاده از Basic Auth در URL
               driver.get(f"https://{username}:{password}@erfanzadeh.ir/")
-              
-              # منتظر بارگذاری صفحه و پیدا کردن input فایل
               wait = WebDriverWait(driver, 30)
               file_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']")))
               file_input.send_keys(os.path.abspath(file_path))
-              
-              # اگر دکمه آپلود جداگانه وجود دارد کلیک کن
               try:
                   upload_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Upload') or contains(text(), 'آپلود')]")
                   upload_btn.click()
               except:
                   pass
-              
-              # منتظر پیام موفقیت یا لینک دانلود (timeout طولانی برای فایل بزرگ)
-              wait_long = WebDriverWait(driver, 3600)  # 1 ساعت
+              wait_long = WebDriverWait(driver, 7200)  # 2 hours for large files
               try:
-                  # منتظر پیام موفقیت
                   wait_long.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".alert-success, .success")))
               except:
                   pass
-              
-              # تلاش برای یافتن لینک دانلود
               all_links = driver.find_elements(By.TAG_NAME, "a")
               for link in all_links:
                   href = link.get_attribute('href')
                   if href and ('download' in href or 'get' in href or os.path.basename(file_path) in href):
                       return href
-              
-              # اگر لینک پیدا نشد، آخرین لینک موجود را برگردان
               if all_links:
                   return all_links[-1].get_attribute('href')
-              
               raise Exception("No download link found after upload")
-
-          def upload_to_nixfile(driver, file_path, creds):
-              # همان تابع قبلی nixfile (در صورت نیاز می‌توانید اضافه کنید)
-              raise NotImplementedError("nixfile.com not implemented in this version")
 
           def upload_to_generic(driver, file_path, creds, site_name):
               return f"Unsupported site: {site_name}"
 
           UPLOAD_FUNCS = {
               "erfanzadeh.ir": upload_to_erfanzadeh,
-              "nixfile.com": upload_to_nixfile,
           }
 
           def main():
@@ -358,27 +351,40 @@ jobs:
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
 
-      - name: Upload to selected sites (using .full file)
+      - name: Upload to selected sites
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.target_sites != ''
         env:
           TARGET_SITES: ${{ github.event.inputs.target_sites }}
           CREDENTIALS: ${{ github.event.inputs.credentials }}
+          UPLOAD_MODE: ${{ github.event.inputs.upload_mode }}
           LOG_FILE: ${{ env.LOG_FILE }}
         run: |
           set -e -x
           exec > >(tee -a "$LOG_FILE") 2>&1
-          # Find the first .full file (reconstructed full file)
-          FULL_FILE=$(find downloads -type f -name "*.full" | head -1)
-          if [ -z "$FULL_FILE" ]; then
-            # Fallback to any other file except scripts/passwords
-            FULL_FILE=$(find downloads -type f ! -name "*.bat" ! -name "*.command" ! -name "*.sh" ! -name "password.txt" ! -name "reconstruct_all.sh" | head -1)
+          if [ "$UPLOAD_MODE" = "full" ]; then
+            # حالت تک فایل کامل
+            FILES_TO_UPLOAD=$(find downloads -type f -name "*.full" | head -1)
+            if [ -z "$FILES_TO_UPLOAD" ]; then
+              FILES_TO_UPLOAD=$(find downloads -type f ! -name "*.bat" ! -name "*.command" ! -name "*.sh" ! -name "password.txt" ! -name "reconstruct_all.sh" | head -1)
+            fi
+            if [ -z "$FILES_TO_UPLOAD" ]; then
+              echo "❌ No file found to upload" | tee -a "$LOG_FILE"
+              exit 1
+            fi
+            echo "Uploading full file: $FILES_TO_UPLOAD" | tee -a "$LOG_FILE"
+            python upload_to_sites.py --file "$FILES_TO_UPLOAD" --sites "$TARGET_SITES" --creds "$CREDENTIALS" 2>&1 | tee -a "$LOG_FILE"
+          else
+            # حالت تکه تکه (پارت)
+            PART_FILES=$(find downloads -type f -name "*.part*" | sort)
+            if [ -z "$PART_FILES" ]; then
+              echo "❌ No part files found to upload" | tee -a "$LOG_FILE"
+              exit 1
+            fi
+            for PART in $PART_FILES; do
+              echo "Uploading part file: $PART" | tee -a "$LOG_FILE"
+              python upload_to_sites.py --file "$PART" --sites "$TARGET_SITES" --creds "$CREDENTIALS" 2>&1 | tee -a "$LOG_FILE"
+            done
           fi
-          if [ -z "$FULL_FILE" ]; then
-            echo "❌ No file found to upload" | tee -a "$LOG_FILE"
-            exit 1
-          fi
-          echo "Uploading file: $FULL_FILE" | tee -a "$LOG_FILE"
-          python upload_to_sites.py --file "$FULL_FILE" --sites "$TARGET_SITES" --creds "$CREDENTIALS" 2>&1 | tee -a "$LOG_FILE"
 
       - name: Upload log as artifact (always, even on failure)
         if: always()
