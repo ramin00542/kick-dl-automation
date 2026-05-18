@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'لینک فایل (یا چند لینک با فاصله)'
+        description: 'لینک فایل (یا چند لینک با فاصله) - پشتیبانی از mega.nz'
         required: true
         type: string
       mode:
@@ -26,14 +26,13 @@ on:
         description: 'سایت‌های مقصد برای آپلود (با کاما جدا کنید)'
         required: true
         type: string
-        default: 'nixfile.com'
+        default: 'erfanzadeh.ir'
       credentials:
         description: |
           اعتبارنامه سایت‌ها – هر خط به فرمت:
           site:username:password   یا   site:guest
           مثال:
-          nixfile.com:myuser:mypass
-          starupload.lol:guest
+          erfanzadeh.ir:admin:admin
         required: false
         type: string
         default: ''
@@ -73,7 +72,7 @@ jobs:
           set -e -x
           exec > >(tee -a "$LOG_FILE") 2>&1
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip chromium-browser chromium-chromedriver
+          sudo apt-get install -y curl zip unzip chromium-browser chromium-chromedriver megatools
           pip install selenium webdriver-manager
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
@@ -109,20 +108,30 @@ jobs:
 
           mkdir -p tmp_downloads downloads
 
-          # Download each URL
+          # Download each URL (supports mega.nz)
           for URL in $URLS; do
             echo "⬇️ Downloading $URL"
             cd tmp_downloads
-            if [ -n "$LINK_PASS" ]; then
-              if [[ "$LINK_PASS" == *:* ]]; then
-                USER="${LINK_PASS%%:*}"
-                PASS="${LINK_PASS#*:}"
-                curl -L -u "$USER:$PASS" -O "$URL"
+            if [[ "$URL" == *"mega.nz"* ]]; then
+              echo "MEGA link detected. Using megatools..."
+              megatools dl --path . "$URL"
+              if [ $? -ne 0 ]; then
+                echo "❌ MEGA download failed"
+                exit 1
+              fi
+            else
+              # Normal download with curl
+              if [ -n "$LINK_PASS" ]; then
+                if [[ "$LINK_PASS" == *:* ]]; then
+                  USER="${LINK_PASS%%:*}"
+                  PASS="${LINK_PASS#*:}"
+                  curl -L -u "$USER:$PASS" -O "$URL"
+                else
+                  curl -L -O "$URL"
+                fi
               else
                 curl -L -O "$URL"
               fi
-            else
-              curl -L -O "$URL"
             fi
             cd ..
           done
@@ -139,7 +148,7 @@ jobs:
             mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
           fi
 
-          # Process each downloaded file: split and reconstruct full
+          # Process each downloaded file: split if >90MB, create .full and merge scripts
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
@@ -164,8 +173,7 @@ jobs:
               echo "🔁 Reconstructing full file from parts (for upload)..."
               cat "$TARGET_DIR/${BASENAME_CLEAN}.part"* > "$TARGET_DIR/${BASENAME_CLEAN}.full"
 
-              # Create merge scripts (for users who need to reconstruct manually)
-              # Windows batch
+              # Create merge scripts (Windows, macOS, Linux)
               printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
               printf 'echo Reconstructing %s ...\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
               printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
@@ -177,7 +185,6 @@ jobs:
               printf 'echo ✅ File %s reconstructed\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
               printf 'pause\r\n' >> "$TARGET_DIR/merge.bat"
 
-              # macOS .command
               printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
               printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.command"
               printf 'cat "%s.part"* > "%s"\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.command"
@@ -185,7 +192,6 @@ jobs:
               printf 'read -p "Press any key..."\n' >> "$TARGET_DIR/merge.command"
               chmod +x "$TARGET_DIR/merge.command"
 
-              # Linux .sh
               printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
               printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.sh"
               printf 'cat "%s.part"* > "%s"\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.sh"
@@ -199,7 +205,7 @@ jobs:
             fi
           done
 
-          # Master reconstruct script (to run all merge scripts)
+          # Master reconstruct script
           MASTER_SCRIPT="downloads/reconstruct_all.sh"
           printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
           printf 'for dir in */; do\n' >> "$MASTER_SCRIPT"
@@ -208,7 +214,6 @@ jobs:
           printf 'echo "All done"\n' >> "$MASTER_SCRIPT"
           chmod +x "$MASTER_SCRIPT"
 
-          # Clean up temporary download folder
           rm -rf tmp_downloads
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
@@ -222,7 +227,6 @@ jobs:
           # upload_to_sites.py
 
           import os
-          import sys
           import time
           import argparse
           from selenium import webdriver
@@ -251,38 +255,63 @@ jobs:
                       creds_dict[site] = {'guest': True}
               return creds_dict
 
-          def upload_to_nixfile(driver, file_path, creds):
-              driver.get("https://nixfile.com/")
+          def upload_to_erfanzadeh(driver, file_path, creds):
+              """
+              آپلود فایل به erfanzadeh.ir (HTTP Basic Auth: admin/admin)
+              """
               if not creds.get('guest', False):
-                  try:
-                      login_btn = driver.find_element(By.LINK_TEXT, "ورود")
-                      login_btn.click()
-                  except:
-                      login_btn = driver.find_element(By.LINK_TEXT, "Login")
-                      login_btn.click()
-                  WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
-                  driver.find_element(By.NAME, "username").send_keys(creds['username'])
-                  driver.find_element(By.NAME, "password").send_keys(creds['password'])
-                  driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-                  time.sleep(3)
-              upload_input = driver.find_element(By.CSS_SELECTOR, "input[type='file']")
-              upload_input.send_keys(os.path.abspath(file_path))
-              time.sleep(2)
+                  username = creds.get('username', 'admin')
+                  password = creds.get('password', 'admin')
+              else:
+                  username = 'admin'
+                  password = 'admin'
+
+              # استفاده از Basic Auth در URL
+              driver.get(f"https://{username}:{password}@erfanzadeh.ir/")
+              
+              # منتظر بارگذاری صفحه و پیدا کردن input فایل
+              wait = WebDriverWait(driver, 30)
+              file_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']")))
+              file_input.send_keys(os.path.abspath(file_path))
+              
+              # اگر دکمه آپلود جداگانه وجود دارد کلیک کن
               try:
-                  upload_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Upload')]")
+                  upload_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Upload') or contains(text(), 'آپلود')]")
                   upload_btn.click()
               except:
                   pass
-              wait = WebDriverWait(driver, 120)
-              link_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.download-link")))
-              return link_elem.get_attribute("href")
+              
+              # منتظر پیام موفقیت یا لینک دانلود (timeout طولانی برای فایل بزرگ)
+              wait_long = WebDriverWait(driver, 3600)  # 1 ساعت
+              try:
+                  # منتظر پیام موفقیت
+                  wait_long.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".alert-success, .success")))
+              except:
+                  pass
+              
+              # تلاش برای یافتن لینک دانلود
+              all_links = driver.find_elements(By.TAG_NAME, "a")
+              for link in all_links:
+                  href = link.get_attribute('href')
+                  if href and ('download' in href or 'get' in href or os.path.basename(file_path) in href):
+                      return href
+              
+              # اگر لینک پیدا نشد، آخرین لینک موجود را برگردان
+              if all_links:
+                  return all_links[-1].get_attribute('href')
+              
+              raise Exception("No download link found after upload")
+
+          def upload_to_nixfile(driver, file_path, creds):
+              # همان تابع قبلی nixfile (در صورت نیاز می‌توانید اضافه کنید)
+              raise NotImplementedError("nixfile.com not implemented in this version")
 
           def upload_to_generic(driver, file_path, creds, site_name):
               return f"Unsupported site: {site_name}"
 
           UPLOAD_FUNCS = {
+              "erfanzadeh.ir": upload_to_erfanzadeh,
               "nixfile.com": upload_to_nixfile,
-              # Add more sites here as functions become available
           }
 
           def main():
@@ -360,7 +389,7 @@ jobs:
           retention-days: 7
 
       - name: Commit & Push (safe mode)
-        if: success() || failure()   # always run, but continue on error
+        if: success() || failure()
         run: |
           set -e -x
           exec > >(tee -a "$LOG_FILE") 2>&1
@@ -369,7 +398,6 @@ jobs:
           git add downloads/ upload_results.txt logs/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "Download and upload results (with logs) [skip ci]"
-            # Try to pull and push, but do not fail if push fails
             git pull --rebase origin ${{ github.ref_name }} || echo "Rebase failed, but continuing"
             git push || echo "Push failed (maybe no permissions or no changes), logs saved as artifact"
           else
