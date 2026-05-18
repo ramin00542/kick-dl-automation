@@ -43,7 +43,6 @@ def upload_to_nixfile(driver, file_path, creds):
     """آپلود به nixfile.com (با پشتیبانی از لاگین و مهمان)"""
     driver.get("https://nixfile.com/")
     if not creds.get('guest', False):
-        # کلیک روی دکمه ورود
         try:
             login_btn = driver.find_element(By.LINK_TEXT, "ورود")
             login_btn.click()
@@ -55,27 +54,79 @@ def upload_to_nixfile(driver, file_path, creds):
         driver.find_element(By.NAME, "password").send_keys(creds['password'])
         driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
         time.sleep(3)
-    # پیدا کردن input فایل
     upload_input = driver.find_element(By.CSS_SELECTOR, "input[type='file']")
     upload_input.send_keys(os.path.abspath(file_path))
-    # ممکن است آپلود خودکار شروع شود، وگرنه کلیک روی دکمه آپلود
     time.sleep(2)
     try:
         upload_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Upload')]")
         upload_btn.click()
     except:
         pass
-    # منتظر لینک دانلود
     wait = WebDriverWait(driver, 120)
     link_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.download-link")))
     return link_elem.get_attribute("href")
 
+def upload_to_erfanzadeh(driver, file_path, creds):
+    """
+    آپلود فایل به سایت erfanzadeh.ir
+    این سایت از HTTP Basic Auth استفاده می‌کند (admin/admin)
+    """
+    # اگر credentials وجود داشته باشد، از آن استفاده کن، در غیر این صورت پیش‌فرض admin/admin
+    if not creds.get('guest', False):
+        username = creds.get('username', 'admin')
+        password = creds.get('password', 'admin')
+    else:
+        username = 'admin'
+        password = 'admin'
+    
+    # قرار دادن اعتبارنامه در URL برای عبور از Basic Auth
+    driver.get(f"https://{username}:{password}@erfanzadeh.ir/")
+    
+    # منتظر بارگذاری صفحه و پیدا کردن input فایل
+    wait = WebDriverWait(driver, 15)
+    # ممکن است چندین input از نوع file وجود داشته باشد (مثلاً برای آپلود همزمان)
+    # معمولاً اولین input مربوط به آپلود است
+    file_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']")))
+    file_input.send_keys(os.path.abspath(file_path))
+    
+    # پس از انتخاب فایل، معمولاً آپلود به صورت خودکار شروع می‌شود (Ajax)
+    # اما گاهی نیاز به کلیک روی دکمه آپلود است
+    try:
+        upload_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Upload') or contains(text(), 'آپلود')]")
+        upload_btn.click()
+    except:
+        pass
+    
+    # منتظر ظاهر شدن لینک دانلود یا پیام موفقیت
+    # در صفحه erfanzadeh.ir، فایل‌های آپلود شده به صورت لیست نمایش داده می‌شوند
+    # ما منتظر می‌مانیم تا تعداد فایل‌ها افزایش یابد یا لینک جدیدی ظاهر شود.
+    # در اینجا به دنبال یک عنصر با کلاس موفقیت یا لینک دانلود می‌گردیم.
+    try:
+        # ابتدا منتظر پیام موفقیت
+        success_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".alert-success, .success, .upload-success")))
+        # سپس سعی می‌کنیم لینک دانلود فایل تازه آپلود شده را پیدا کنیم
+        # معمولاً لینک‌ها در جدول یا لیست هستند. جدیدترین فایل معمولاً آخرین ردیف است.
+        # با فرض اینکه لینک دانلود در یک عنصر <a> با کلاس خاص قرار دارد:
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='download'], a[href*='get']")
+        if links:
+            # آخرین لینک (احتمالاً مربوط به فایل جدید)
+            return links[-1].get_attribute('href')
+        else:
+            return "Upload completed but download link not found. Check manually."
+    except Exception as e:
+        # اگر پیام موفقیت نیامد، شاید صفحه بعد از آپلود لینک مستقیم نمایش دهد
+        # ممکن است لینک در همان صفحه فعلی باشد
+        all_links = driver.find_elements(By.TAG_NAME, "a")
+        for link in all_links:
+            href = link.get_attribute('href')
+            if href and ('download' in href or 'get' in href or os.path.basename(file_path) in href):
+                return href
+        raise Exception(f"Could not find download link: {str(e)}")
+
 def upload_to_starupload(driver, file_path, creds):
-    # مثال: starupload.lol (اگر فعال شود)
     raise NotImplementedError("starupload.lol is currently not implemented")
 
 def upload_to_uplod_ir(driver, file_path, creds):
-    # uplod.ir (فعلاً down است)
     raise NotImplementedError("uplod.ir is not available")
 
 def upload_to_generic(driver, file_path, creds, site_name):
@@ -84,6 +135,7 @@ def upload_to_generic(driver, file_path, creds, site_name):
 # نگاشت نام سایت به تابع
 UPLOAD_FUNCS = {
     "nixfile.com": upload_to_nixfile,
+    "erfanzadeh.ir": upload_to_erfanzadeh,   # <-- اضافه شد
     "starupload.lol": upload_to_starupload,
     "uplod.ir": upload_to_uplod_ir,
     # سایر سایت‌ها را به همین ترتیب اضافه کنید
@@ -92,14 +144,13 @@ UPLOAD_FUNCS = {
 def main():
     parser = argparse.ArgumentParser(description="Upload file to selected hosting sites using Selenium")
     parser.add_argument("--file", required=True, help="Path to the file to upload")
-    parser.add_argument("--sites", required=True, help="Comma-separated list of target sites (e.g., nixfile.com,starupload.lol)")
+    parser.add_argument("--sites", required=True, help="Comma-separated list of target sites (e.g., nixfile.com,erfanzadeh.ir)")
     parser.add_argument("--creds", default="", help="Credentials string: site:username:password or site:guest per line")
     args = parser.parse_args()
 
     sites = [s.strip() for s in args.sites.split(",")]
     creds_dict = parse_credentials(args.creds, sites)
 
-    # راه‌اندازی مرورگر بی‌سر (headless)
     options = webdriver.ChromeOptions()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -123,7 +174,6 @@ def main():
 
     driver.quit()
 
-    # ذخیره نتایج در فایل
     with open("upload_results.txt", "w", encoding="utf-8") as f:
         for site, link in results.items():
             f.write(f"{site}: {link}\n")
