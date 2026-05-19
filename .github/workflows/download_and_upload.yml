@@ -73,31 +73,21 @@ jobs:
           echo "Starting workflow at $(date)" | tee -a "$LOG_FILE"
           echo "Event: ${{ github.event_name }}" | tee -a "$LOG_FILE"
 
+      # FIX: Use latest chromedriver via npx/webdriver-manager instead of manual version matching
       - name: Install dependencies (Google Chrome + chromedriver + megatools)
         run: |
           set -e -x
           exec > >(tee -a "$LOG_FILE") 2>&1
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip wget
-          # نصب Google Chrome
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          # نصب chromedriver متناسب با نسخه کروم
-          CHROME_VERSION=$(google-chrome-stable --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
-          unzip chromedriver-linux64.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
-          sudo chmod +x /usr/local/bin/chromedriver
-          rm -rf chromedriver-linux64*
-          # نصب megatools
-          sudo apt-get install -y megatools
+          sudo apt-get install -y curl zip unzip wget megatools google-chrome-stable
+          # FIX: Use chromedriver that matches installed Chrome automatically
           pip install selenium webdriver-manager
+          # Pre-install chromedriver via webdriver-manager to avoid runtime delays
+          python -c "from webdriver_manager.chrome import ChromeDriverManager; ChromeDriverManager().install()"
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
 
-      - name: Download, Split & Prepare Files (with .full reconstruction)
+      - name: Download, Split & Prepare Files
         run: |
           set -e -x
           exec > >(tee -a "$LOG_FILE") 2>&1
@@ -128,26 +118,17 @@ jobs:
 
           mkdir -p tmp_downloads downloads
 
-          # Download each URL (supports mega.nz)
           for URL in $URLS; do
             echo "⬇️ Downloading $URL"
             cd tmp_downloads
             if [[ "$URL" == *"mega.nz"* ]]; then
               echo "MEGA link detected. Using megatools..."
               megatools dl --path . "$URL"
-              if [ $? -ne 0 ]; then
-                echo "❌ MEGA download failed"
-                exit 1
-              fi
             else
-              if [ -n "$LINK_PASS" ]; then
-                if [[ "$LINK_PASS" == *:* ]]; then
-                  USER="${LINK_PASS%%:*}"
-                  PASS="${LINK_PASS#*:}"
-                  curl -L -u "$USER:$PASS" -O "$URL"
-                else
-                  curl -L -O "$URL"
-                fi
+              if [ -n "$LINK_PASS" ] && [[ "$LINK_PASS" == *:* ]]; then
+                USER="${LINK_PASS%%:*}"
+                PASS="${LINK_PASS#*:}"
+                curl -L -u "$USER:$PASS" -O "$URL"
               else
                 curl -L -O "$URL"
               fi
@@ -155,11 +136,9 @@ jobs:
             cd ..
           done
 
-          # Flatten all files to root of tmp_downloads
           find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
           rm -rf tmp_downloads/*/
 
-          # Zip mode: combine all into one archive
           if [ "$MODE" = "zip" ]; then
             ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
             zip -j "$ARCHIVE_NAME" tmp_downloads/*
@@ -167,7 +146,6 @@ jobs:
             mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
           fi
 
-          # Process each downloaded file: split if >90MB, create .full and merge scripts
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
@@ -180,201 +158,59 @@ jobs:
             if [ -n "$LINK_PASS" ] || [ -n "$FILE_PASS" ]; then
               echo "--- Password Info ---" > "$TARGET_DIR/password.txt"
               [ -n "$LINK_PASS" ] && echo "Download password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
-              [ -n "$FILE_PASS" ] && echo "File password (e.g., ZIP password): $FILE_PASS" >> "$TARGET_DIR/password.txt"
+              [ -n "$FILE_PASS" ] && echo "File password: $FILE_PASS" >> "$TARGET_DIR/password.txt"
             fi
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME_CLEAN is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks"
               split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
-              echo "🔁 Reconstructing full file from parts (for upload)..."
               cat "$TARGET_DIR/${BASENAME_CLEAN}.part"* > "$TARGET_DIR/${BASENAME_CLEAN}.full"
-
-              # Create merge scripts
-              printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
-              printf 'echo Reconstructing %s ...\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
-              printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
-              printf 'if errorlevel 1 (\r\n' >> "$TARGET_DIR/merge.bat"
-              printf '  echo ❌ Error\r\n' >> "$TARGET_DIR/merge.bat"
-              printf '  pause\r\n' >> "$TARGET_DIR/merge.bat"
-              printf '  exit /b 1\r\n' >> "$TARGET_DIR/merge.bat"
-              printf ')\r\n' >> "$TARGET_DIR/merge.bat"
-              printf 'echo ✅ File %s reconstructed\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
-              printf 'pause\r\n' >> "$TARGET_DIR/merge.bat"
-
-              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
-              printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.command"
-              printf 'cat "%s.part"* > "%s"\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.command"
-              printf 'echo "✅ %s reconstructed"\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.command"
-              printf 'read -p "Press any key..."\n' >> "$TARGET_DIR/merge.command"
-              chmod +x "$TARGET_DIR/merge.command"
-
-              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
-              printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.sh"
-              printf 'cat "%s.part"* > "%s"\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.sh"
-              printf 'echo "✅ %s reconstructed"\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.sh"
-              chmod +x "$TARGET_DIR/merge.sh"
             else
-              echo "📄 Copying $BASENAME_CLEAN (small file)"
               cp "$FILE" "$TARGET_DIR/$BASENAME_CLEAN"
               cp "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.full"
             fi
           done
 
-          MASTER_SCRIPT="downloads/reconstruct_all.sh"
-          printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
-          printf 'for dir in */; do\n' >> "$MASTER_SCRIPT"
-          printf '    [ -f "$dir/merge.sh" ] && (cd "$dir" && bash merge.sh)\n' >> "$MASTER_SCRIPT"
-          printf 'done\n' >> "$MASTER_SCRIPT"
-          printf 'echo "All done"\n' >> "$MASTER_SCRIPT"
-          chmod +x "$MASTER_SCRIPT"
-
           rm -rf tmp_downloads
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
 
-      - name: Create upload script (upload_to_sites.py)
-        run: |
-          set -e -x
-          exec > >(tee -a "$LOG_FILE") 2>&1
-          cat > upload_to_sites.py << 'EOF'
-          #!/usr/bin/env python3
-          # upload_to_sites.py
-
-          import os
-          import time
-          import argparse
-          from selenium import webdriver
-          from selenium.webdriver.common.by import By
-          from selenium.webdriver.support.ui import WebDriverWait
-          from selenium.webdriver.support import expected_conditions as EC
-
-          def parse_credentials(creds_str, target_sites_list):
-              creds_dict = {}
-              if not creds_str:
-                  return creds_dict
-              for line in creds_str.strip().split('\n'):
-                  line = line.strip()
-                  if not line:
-                      continue
-                  parts = line.split(':')
-                  if len(parts) == 2 and parts[1].lower() == 'guest':
-                      creds_dict[parts[0]] = {'guest': True}
-                  elif len(parts) == 3:
-                      site, user, pwd = parts
-                      creds_dict[site] = {'username': user, 'password': pwd}
-                  else:
-                      print(f"⚠️ Invalid credentials line: {line}")
-              for site in target_sites_list:
-                  if site not in creds_dict:
-                      creds_dict[site] = {'guest': True}
-              return creds_dict
-
-          def upload_to_erfanzadeh(driver, file_path, creds):
-              if not creds.get('guest', False):
-                  username = creds.get('username', 'admin')
-                  password = creds.get('password', 'admin')
-              else:
-                  username = 'admin'
-                  password = 'admin'
-
-              driver.get(f"https://{username}:{password}@erfanzadeh.ir/")
-              wait = WebDriverWait(driver, 30)
-              file_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']")))
-              file_input.send_keys(os.path.abspath(file_path))
-              try:
-                  upload_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Upload') or contains(text(), 'آپلود')]")
-                  upload_btn.click()
-              except:
-                  pass
-              wait_long = WebDriverWait(driver, 7200)  # 2 hours for large files
-              try:
-                  wait_long.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".alert-success, .success")))
-              except:
-                  pass
-              all_links = driver.find_elements(By.TAG_NAME, "a")
-              for link in all_links:
-                  href = link.get_attribute('href')
-                  if href and ('download' in href or 'get' in href or os.path.basename(file_path) in href):
-                      return href
-              if all_links:
-                  return all_links[-1].get_attribute('href')
-              raise Exception("No download link found after upload")
-
-          def upload_to_generic(driver, file_path, creds, site_name):
-              return f"Unsupported site: {site_name}"
-
-          UPLOAD_FUNCS = {
-              "erfanzadeh.ir": upload_to_erfanzadeh,
-          }
-
-          def main():
-              parser = argparse.ArgumentParser()
-              parser.add_argument("--file", required=True)
-              parser.add_argument("--sites", required=True)
-              parser.add_argument("--creds", default="")
-              args = parser.parse_args()
-
-              sites = [s.strip() for s in args.sites.split(",")]
-              creds_dict = parse_credentials(args.creds, sites)
-
-              options = webdriver.ChromeOptions()
-              options.add_argument("--headless")
-              options.add_argument("--no-sandbox")
-              options.add_argument("--disable-dev-shm-usage")
-              driver = webdriver.Chrome(options=options)
-
-              results = {}
-              for site in sites:
-                  print(f"\n📤 Uploading to {site} ...")
-                  func = UPLOAD_FUNCS.get(site, upload_to_generic)
-                  try:
-                      if func == upload_to_generic:
-                          link = func(driver, args.file, creds_dict.get(site, {'guest': True}), site)
-                      else:
-                          link = func(driver, args.file, creds_dict.get(site, {'guest': True}))
-                      results[site] = link
-                      print(f"✅ {site} -> {link}")
-                  except Exception as e:
-                      results[site] = f"Error: {str(e)}"
-                      print(f"❌ {site} failed: {e}")
-
-              driver.quit()
-              with open("upload_results.txt", "w", encoding="utf-8") as f:
-                  for site, link in results.items():
-                      f.write(f"{site}: {link}\n")
-              print("\n📝 Results saved to upload_results.txt")
-
-          if __name__ == "__main__":
-              main()
-          EOF
-          chmod +x upload_to_sites.py
-        env:
-          LOG_FILE: ${{ env.LOG_FILE }}
-
+      # FIX: Use upload_to_sites.py from repo directly (no heredoc = no indentation bug)
+      # Make sure upload_to_sites.py is committed to your repo root!
       - name: Upload to selected sites
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.target_sites != ''
+        # FIX: also run on push trigger (not just workflow_dispatch)
+        if: |
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.target_sites != '') ||
+          (github.event_name == 'push' && (
+            contains(github.event.head_commit.message, 'github:') ||
+            contains(github.event.head_commit.message, 'github-zip:')
+          ))
         env:
-          TARGET_SITES: ${{ github.event.inputs.target_sites }}
-          CREDENTIALS: ${{ github.event.inputs.credentials }}
-          UPLOAD_MODE: ${{ github.event.inputs.upload_mode }}
+          TARGET_SITES: ${{ github.event.inputs.target_sites || 'erfanzadeh.ir' }}
+          CREDENTIALS: ${{ github.event.inputs.credentials || '' }}
+          UPLOAD_MODE: ${{ github.event.inputs.upload_mode || 'full' }}
           LOG_FILE: ${{ env.LOG_FILE }}
         run: |
           set -e -x
           exec > >(tee -a "$LOG_FILE") 2>&1
+
           if [ "$UPLOAD_MODE" = "full" ]; then
-            # حالت تک فایل کامل
             FILES_TO_UPLOAD=$(find downloads -type f -name "*.full" | head -1)
             if [ -z "$FILES_TO_UPLOAD" ]; then
-              FILES_TO_UPLOAD=$(find downloads -type f ! -name "*.bat" ! -name "*.command" ! -name "*.sh" ! -name "password.txt" ! -name "reconstruct_all.sh" | head -1)
+              FILES_TO_UPLOAD=$(find downloads -type f \
+                ! -name "*.bat" ! -name "*.command" ! -name "*.sh" \
+                ! -name "password.txt" ! -name "reconstruct_all.sh" | head -1)
             fi
             if [ -z "$FILES_TO_UPLOAD" ]; then
               echo "❌ No file found to upload" | tee -a "$LOG_FILE"
               exit 1
             fi
             echo "Uploading full file: $FILES_TO_UPLOAD" | tee -a "$LOG_FILE"
-            python upload_to_sites.py --file "$FILES_TO_UPLOAD" --sites "$TARGET_SITES" --creds "$CREDENTIALS" 2>&1 | tee -a "$LOG_FILE"
+            python upload_to_sites.py \
+              --file "$FILES_TO_UPLOAD" \
+              --sites "$TARGET_SITES" \
+              --creds "$CREDENTIALS" 2>&1 | tee -a "$LOG_FILE"
           else
-            # حالت تکه تکه (پارت)
             PART_FILES=$(find downloads -type f -name "*.part*" | sort)
             if [ -z "$PART_FILES" ]; then
               echo "❌ No part files found to upload" | tee -a "$LOG_FILE"
@@ -382,11 +218,14 @@ jobs:
             fi
             for PART in $PART_FILES; do
               echo "Uploading part file: $PART" | tee -a "$LOG_FILE"
-              python upload_to_sites.py --file "$PART" --sites "$TARGET_SITES" --creds "$CREDENTIALS" 2>&1 | tee -a "$LOG_FILE"
+              python upload_to_sites.py \
+                --file "$PART" \
+                --sites "$TARGET_SITES" \
+                --creds "$CREDENTIALS" 2>&1 | tee -a "$LOG_FILE"
             done
           fi
 
-      - name: Upload log as artifact (always, even on failure)
+      - name: Upload log as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -394,7 +233,7 @@ jobs:
           path: logs/
           retention-days: 7
 
-      - name: Commit & Push (safe mode)
+      - name: Commit & Push
         if: success() || failure()
         run: |
           set -e -x
@@ -403,9 +242,9 @@ jobs:
           git config user.email "github-actions@github.com"
           git add downloads/ upload_results.txt logs/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
-            git commit -m "Download and upload results (with logs) [skip ci]"
-            git pull --rebase origin ${{ github.ref_name }} || echo "Rebase failed, but continuing"
-            git push || echo "Push failed (maybe no permissions or no changes), logs saved as artifact"
+            git commit -m "Download and upload results [skip ci]"
+            git pull --rebase origin ${{ github.ref_name }} || echo "Rebase failed"
+            git push || echo "Push failed"
           else
             echo "No changes to commit"
           fi
