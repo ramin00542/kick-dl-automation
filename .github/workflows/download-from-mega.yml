@@ -7,14 +7,15 @@ on:
         description: 'لینک فایل یا پوشه در MEGA (چندتا لینک با فاصله مجاز است)'
         required: true
         type: string
-      mode:
-        description: 'حالت دانلود (normal یا zip)'
+      handling:
+        description: 'نحوه برخورد با فایل‌ها (حالت دلخواه را انتخاب کنید)'
         required: false
-        default: 'normal'
+        default: 'single_zip_split'
         type: choice
         options:
-          - normal
-          - zip
+          - single_zip_split   # همه فایل‌ها در یک ZIP → در صورت نیاز پارت‌بندی همان ZIP
+          - full_file_no_split # بدون پارت‌بندی (در صورت >100MB خطا می‌دهد)
+          - individual_split   # هر فایل بزرگ جداگانه پارت می‌شود (حالت قبلی normal)
       link_password:
         description: 'رمز لینک MEGA (در صورت نیاز)'
         required: false
@@ -36,7 +37,8 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, 'mega:') ||
-      contains(github.event.head_commit.message, 'mega-zip:')
+      contains(github.event.head_commit.message, 'mega-zip:') ||
+      contains(github.event.head_commit.message, 'mega-full:')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -54,24 +56,22 @@ jobs:
           MSG=$(git log -1 --pretty=%B)
           echo "Commit message: $MSG"
 
+          # تعیین حالت و لینک‌ها بر اساس trigger
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            MODE="${{ github.event.inputs.mode }}"
+            HANDLING="${{ github.event.inputs.handling }}"
             URLS="${{ github.event.inputs.mega_link }}"
             LINK_PASS="${{ github.event.inputs.link_password }}"
             FILE_PASS="${{ github.event.inputs.file_password }}"
-            echo "Mode: $MODE (manual trigger)"
-            if [ -n "$LINK_PASS" ]; then
-              echo "Link password provided (will be used for download)"
-            fi
-            if [ -n "$FILE_PASS" ]; then
-              echo "File password provided (will be saved as info)"
-            fi
+            echo "Handling: $HANDLING (manual trigger)"
           else
-            if echo "$MSG" | grep -qP 'mega-zip:'; then
-              MODE="zip"
+            if echo "$MSG" | grep -qP 'mega-full:'; then
+              HANDLING="full_file_no_split"
+              URLS=$(echo "$MSG" | grep -oP 'mega-full:\s*\K.*')
+            elif echo "$MSG" | grep -qP 'mega-zip:'; then
+              HANDLING="single_zip_split"
               URLS=$(echo "$MSG" | grep -oP 'mega-zip:\s*\K.*')
             elif echo "$MSG" | grep -qP 'mega:'; then
-              MODE="normal"
+              HANDLING="individual_split"
               URLS=$(echo "$MSG" | grep -oP 'mega:\s*\K.*')
             else
               echo "❌ No mega command found in commit message"
@@ -79,12 +79,12 @@ jobs:
             fi
             LINK_PASS=""
             FILE_PASS=""
-            echo "Mode: $MODE (from commit, no passwords)"
+            echo "Handling: $HANDLING (from commit, no passwords)"
           fi
 
           mkdir -p tmp_downloads downloads/MEGA
 
-          # دانلود همه لینک‌ها
+          # دانلود همه لینک‌ها (با پشتیبانی از رمز لینک)
           for URL in $URLS; do
             echo "⬇️ Downloading $URL using megatools"
             cd tmp_downloads
@@ -102,101 +102,151 @@ jobs:
             cd ..
           done
 
-          # بیرون کشیدن فایل‌ها از زیرپوشه‌ها (برای پوشه‌های MEGA)
+          # بیرون کشیدن فایل‌ها از زیرپوشه‌های MEGA
           find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
           rm -rf tmp_downloads/*/
 
-          # حالت zip: فقط یک آرشیو نهایی نگه داشته شود
-          if [ "$MODE" = "zip" ]; then
-            ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
+          # ------------------------------------------------------------------
+          # حالت single_zip_split : یک ZIP از همه فایل‌ها می‌سازیم
+          # ------------------------------------------------------------------
+          if [ "$HANDLING" = "single_zip_split" ]; then
+            echo "📦 Creating single ZIP archive from all downloaded files"
+            ARCHIVE_NAME="tmp_downloads/all_files_$(date +%Y%m%d_%H%M%S).zip"
             zip -j "$ARCHIVE_NAME" tmp_downloads/*
             rm -f tmp_downloads/*
             mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
-          fi
 
-          # پردازش هر فایل دانلود شده
-          for FILE in tmp_downloads/*; do
-            [ -f "$FILE" ] || continue
-            SIZE=$(stat -c%s "$FILE")
+            # حالا archive.zip را به عنوان یک فایل واحد پردازش می‌کنیم
+            FINAL_FILE="tmp_downloads/archive.zip"
+            SIZE=$(stat -c%s "$FINAL_FILE")
             LIMIT=$((90 * 1024 * 1024))
-            BASENAME=$(basename "$FILE")
-
+            BASENAME="archive.zip"
             TARGET_DIR="downloads/MEGA/$BASENAME"
             mkdir -p "$TARGET_DIR"
 
-            # ذخیره رمزهای موجود در یک فایل متنی
+            # ذخیره رمزهای موجود در password.txt
             if [ -n "$LINK_PASS" ] || [ -n "$FILE_PASS" ]; then
               echo "--- Password Info ---" > "$TARGET_DIR/password.txt"
-              if [ -n "$LINK_PASS" ]; then
-                echo "MEGA link password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
-              fi
-              if [ -n "$FILE_PASS" ]; then
-                echo "File password (e.g., ZIP password): $FILE_PASS" >> "$TARGET_DIR/password.txt"
-              fi
+              [ -n "$LINK_PASS" ] && echo "MEGA link password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
+              [ -n "$FILE_PASS" ] && echo "File password (e.g., ZIP password): $FILE_PASS" >> "$TARGET_DIR/password.txt"
             fi
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks in $TARGET_DIR"
-              split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME}.part"
+              echo "✂️ archive.zip is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks in $TARGET_DIR"
+              split -b 90M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${BASENAME}.part"
 
-              # --- ساخت اسکریپت‌های merge ---
-              # Windows .bat
+              # ساخت اسکریپت‌های merge برای ویندوز، مک و لینوکس
               printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
-              printf 'echo Reconstructing %s ...\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
-              printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.bat"
-              printf 'if errorlevel 1 (\r\n' >> "$TARGET_DIR/merge.bat"
-              printf '  echo ❌ Error: Failed to reconstruct %s\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
-              printf '  pause\r\n' >> "$TARGET_DIR/merge.bat"
-              printf '  exit /b 1\r\n' >> "$TARGET_DIR/merge.bat"
-              printf ')\r\n' >> "$TARGET_DIR/merge.bat"
-              printf 'echo ✅ File %s reconstructed successfully.\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
-              printf 'pause\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'echo Reconstructing archive.zip ...\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'copy /b "archive.zip.part*" "archive.zip" > nul\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'if errorlevel 1 (\r\n  echo ❌ Error\r\n  pause\r\n  exit /b 1\r\n)\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'echo ✅ archive.zip reconstructed successfully.\r\npause\r\n' >> "$TARGET_DIR/merge.bat"
 
-              # macOS .command
               printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
               printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.command"
-              printf 'echo "Reconstructing %s ..."\n' "$BASENAME" >> "$TARGET_DIR/merge.command"
-              printf 'cat "%s.part"* > "%s"\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.command"
-              printf 'if [ $? -eq 0 ]; then\n' >> "$TARGET_DIR/merge.command"
-              printf '  echo "✅ File %s reconstructed successfully."\n' "$BASENAME" >> "$TARGET_DIR/merge.command"
-              printf 'else\n' >> "$TARGET_DIR/merge.command"
-              printf '  echo "❌ Error: Failed to reconstruct %s"\n' "$BASENAME" >> "$TARGET_DIR/merge.command"
-              printf '  exit 1\n' >> "$TARGET_DIR/merge.command"
-              printf 'fi\n' >> "$TARGET_DIR/merge.command"
-              printf 'echo "Press any key to close..."\n' >> "$TARGET_DIR/merge.command"
-              printf 'read -n 1\n' >> "$TARGET_DIR/merge.command"
+              printf 'cat "archive.zip.part"* > "archive.zip"\n' >> "$TARGET_DIR/merge.command"
+              printf 'echo "✅ archive.zip reconstructed"\nread -n 1\n' >> "$TARGET_DIR/merge.command"
               chmod +x "$TARGET_DIR/merge.command"
 
-              # Linux .sh
               printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
               printf 'cd "$(dirname "$0")"\n' >> "$TARGET_DIR/merge.sh"
-              printf 'cat "%s.part"* > "%s"\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.sh"
-              printf 'echo "✅ %s reconstructed"\n' "$BASENAME" >> "$TARGET_DIR/merge.sh"
+              printf 'cat "archive.zip.part"* > "archive.zip"\n' >> "$TARGET_DIR/merge.sh"
+              printf 'echo "✅ archive.zip reconstructed"\n' >> "$TARGET_DIR/merge.sh"
               chmod +x "$TARGET_DIR/merge.sh"
-
             else
-              echo "📄 Copying $BASENAME to $TARGET_DIR"
-              cp "$FILE" "$TARGET_DIR/$BASENAME"
+              echo "📄 Copying archive.zip to $TARGET_DIR"
+              cp "$FINAL_FILE" "$TARGET_DIR/archive.zip"
             fi
-          done
 
-          # اسکریپت اصلی بازسازی یکجا
-          MASTER_SCRIPT="downloads/MEGA/reconstruct_all.sh"
-          printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
-          printf 'set -e\n' >> "$MASTER_SCRIPT"
-          printf 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n' >> "$MASTER_SCRIPT"
-          printf 'cd "$SCRIPT_DIR"\n' >> "$MASTER_SCRIPT"
-          printf 'echo "🔍 Scanning for folders containing split files..."\n' >> "$MASTER_SCRIPT"
-          printf 'for dir in */; do\n' >> "$MASTER_SCRIPT"
-          printf '    if [ -d "$dir" ] && [ -f "$dir/merge.sh" ]; then\n' >> "$MASTER_SCRIPT"
-          printf '        echo "🔄 Reconstructing in $dir"\n' >> "$MASTER_SCRIPT"
-          printf '        (cd "$dir" && bash merge.sh)\n' >> "$MASTER_SCRIPT"
-          printf '    fi\n' >> "$MASTER_SCRIPT"
-          printf 'done\n' >> "$MASTER_SCRIPT"
-          printf 'echo "✅ All files reconstructed successfully."\n' >> "$MASTER_SCRIPT"
-          chmod +x "$MASTER_SCRIPT"
+            # اسکریپت master بازسازی (برای حالت تک‌فایل نیازی نیست ولی جهت یکدستی)
+            MASTER_SCRIPT="downloads/MEGA/reconstruct_all.sh"
+            printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
+            printf 'set -e\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\ncd "$SCRIPT_DIR"\n' >> "$MASTER_SCRIPT"
+            printf 'for dir in */; do\n  if [ -d "$dir" ] && [ -f "$dir/merge.sh" ]; then\n    (cd "$dir" && bash merge.sh)\n  fi\ndone\n' >> "$MASTER_SCRIPT"
+            printf 'echo "✅ Done"\n' >> "$MASTER_SCRIPT"
+            chmod +x "$MASTER_SCRIPT"
 
-          rm -rf tmp_downloads
+            rm -rf tmp_downloads
+            exit 0
+          fi
+
+          # ------------------------------------------------------------------
+          # حالت full_file_no_split : بدون هیچ پارت‌بندی (فقط کپی)
+          # ------------------------------------------------------------------
+          if [ "$HANDLING" = "full_file_no_split" ]; then
+            echo "⚠️ حالت full_file_no_split: فایل‌ها بدون تقسیم ذخیره می‌شوند."
+            echo "⚠️ توجه: گیت‌هاب فایل‌های بزرگتر از 100MB را رد می‌کند. در صورت وجود فایل >100MB، عمل commit ناموفق خواهد بود."
+
+            for FILE in tmp_downloads/*; do
+              [ -f "$FILE" ] || continue
+              BASENAME=$(basename "$FILE")
+              TARGET_DIR="downloads/MEGA/$BASENAME"
+              mkdir -p "$TARGET_DIR"
+
+              if [ -n "$LINK_PASS" ] || [ -n "$FILE_PASS" ]; then
+                echo "--- Password Info ---" > "$TARGET_DIR/password.txt"
+                [ -n "$LINK_PASS" ] && echo "MEGA link password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
+                [ -n "$FILE_PASS" ] && echo "File password: $FILE_PASS" >> "$TARGET_DIR/password.txt"
+              fi
+
+              cp "$FILE" "$TARGET_DIR/$BASENAME"
+              echo "✅ Copied $BASENAME (size: $(stat -c%s "$FILE") bytes)"
+            done
+
+            rm -rf tmp_downloads
+            exit 0
+          fi
+
+          # ------------------------------------------------------------------
+          # حالت individual_split (قدیمی normal) : هر فایل بزرگ جداگانه پارت می‌شود
+          # ------------------------------------------------------------------
+          if [ "$HANDLING" = "individual_split" ]; then
+            for FILE in tmp_downloads/*; do
+              [ -f "$FILE" ] || continue
+              SIZE=$(stat -c%s "$FILE")
+              LIMIT=$((90 * 1024 * 1024))
+              BASENAME=$(basename "$FILE")
+              TARGET_DIR="downloads/MEGA/$BASENAME"
+              mkdir -p "$TARGET_DIR"
+
+              if [ -n "$LINK_PASS" ] || [ -n "$FILE_PASS" ]; then
+                echo "--- Password Info ---" > "$TARGET_DIR/password.txt"
+                [ -n "$LINK_PASS" ] && echo "MEGA link password: $LINK_PASS" >> "$TARGET_DIR/password.txt"
+                [ -n "$FILE_PASS" ] && echo "File password: $FILE_PASS" >> "$TARGET_DIR/password.txt"
+              fi
+
+              if [ "$SIZE" -gt "$LIMIT" ]; then
+                echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting into 90MB chunks"
+                split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME}.part"
+                # ساخت merge.bat , merge.command , merge.sh مشابه قبل
+                printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
+                printf 'echo Reconstructing %s ...\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
+                printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.bat"
+                printf 'if errorlevel 1 ( echo ❌ Error & pause & exit /b 1 )\r\necho ✅ %s reconstructed.\r\npause\r\n' "$BASENAME" >> "$TARGET_DIR/merge.bat"
+
+                printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
+                printf 'cd "$(dirname "$0")"\ncat "%s.part"* > "%s"\necho "✅ %s reconstructed"\nread -n 1\n' "$BASENAME" "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.command"
+                chmod +x "$TARGET_DIR/merge.command"
+
+                printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
+                printf 'cd "$(dirname "$0")"\ncat "%s.part"* > "%s"\necho "✅ %s reconstructed"\n' "$BASENAME" "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.sh"
+                chmod +x "$TARGET_DIR/merge.sh"
+              else
+                cp "$FILE" "$TARGET_DIR/$BASENAME"
+              fi
+            done
+
+            # اسکریپت master بازسازی
+            MASTER_SCRIPT="downloads/MEGA/reconstruct_all.sh"
+            printf '#!/bin/bash\n' > "$MASTER_SCRIPT"
+            printf 'set -e\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\ncd "$SCRIPT_DIR"\n' >> "$MASTER_SCRIPT"
+            printf 'for dir in */; do\n  if [ -d "$dir" ] && [ -f "$dir/merge.sh" ]; then\n    (cd "$dir" && bash merge.sh)\n  fi\ndone\n' >> "$MASTER_SCRIPT"
+            printf 'echo "✅ All files reconstructed."\n' >> "$MASTER_SCRIPT"
+            chmod +x "$MASTER_SCRIPT"
+
+            rm -rf tmp_downloads
+            exit 0
+          fi
 
       - name: Commit & Push (single commit)
         run: |
@@ -210,8 +260,20 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Add files from MEGA ($MODE mode) [skip ci]"
+          # بررسی وجود فایل‌های بزرگتر از 100MB در حالت full_file_no_split (اخطار اضافی)
+          if [ "${{ github.event.inputs.handling }}" = "full_file_no_split" ] || \
+             ( [ "${{ github.event_name }}" != "workflow_dispatch" ] && echo "$MSG" | grep -q 'mega-full:' ); then
+            LARGE_FILES=$(find downloads/ -type f -size +100M 2>/dev/null || true)
+            if [ -n "$LARGE_FILES" ]; then
+              echo "❌ ERROR: فایل(های) زیر بزرگتر از 100MB هستند و گیت‌هاب اجازه push نمی‌دهد:"
+              echo "$LARGE_FILES"
+              echo "لطفاً از حالت single_zip_split یا individual_split استفاده کنید یا Git LFS را فعال نمایید."
+              exit 1
+            fi
+          fi
+
+          git commit -m "Add files from MEGA ($HANDLING mode) [skip ci]"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
 
-          echo "🎉 All files pushed successfully in downloads/MEGA/ organized by file name"
+          echo "🎉 All files pushed successfully in downloads/MEGA/"
