@@ -95,6 +95,8 @@ jobs:
   # Job 2: Process using reusable workflow
   save-file:
     needs: parse
+    permissions:
+      contents: write
     uses: ./.github/workflows/_reusable-process.yml
     with:
       source: "${{ needs.parse.outputs.source }}"
