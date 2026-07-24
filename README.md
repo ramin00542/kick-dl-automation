@@ -21,8 +21,10 @@ KickDL is a professional GitHub Actions automation suite that:
 .github/
 ├── scripts/                  ← Clean, modular bash scripts
 │   ├── common.sh             ← Shared utilities (logging, split detection, merge scripts)
+│   ├── lib/
+│   │   └── handling.sh       ← Handling-mode logic (normalize + full/split/zip strategies)
 │   ├── download.sh           ← Download from direct/mega/pixeldrain
-│   ├── process.sh            ← Zip / split / preserve processing
+│   ├── process.sh            ← Thin orchestrator (dispatches to lib/handling.sh)
 │   ├── upload.sh             ← Upload to file hosting sites
 │   ├── release.sh            ← Create GitHub Release
 │   └── commit.sh             ← Commit small files to repo
@@ -53,24 +55,29 @@ Go to your repository's **Actions** tab → select a workflow → click **Run wo
 
 | Prefix | Source | Handling |
 |--------|--------|----------|
-| `github: <url>` | direct | individual_split |
-| `github-zip: <url>` | direct | zip |
-| `mega: <url>` | mega | individual_split |
-| `mega-zip: <url>` | mega | single_zip_split |
-| `mega-full: <url>` | mega | full_file_no_split |
-| `pixeldrain: <url>` | pixeldrain | single_zip_split |
+| `github: <url>` | direct | split |
+| `github-zip: <url>` | direct | zip_split |
+| `mega: <url>` | mega | split |
+| `mega-zip: <url>` | mega | zip_split |
+| `mega-full: <url>` | mega | full_file |
+| `pixeldrain: <url>` | pixeldrain | zip_split |
 
 ---
 
 ## ⚙️ Handling Modes
 
-| Mode | Description | Split? | `.full` file? |
-|------|-------------|:------:|:--------------:|
-| `normal` | Keep original names, split if needed | ✅ | ✅ |
-| `individual_split` | Same as normal (explicit) | ✅ | ✅ |
-| `single_zip_split` | ZIP all files into one archive | ✅ | ❌ |
-| `full_file_no_split` | Keep files as-is, no splitting | ❌ | ❌ |
-| `zip` | ZIP all files (older behavior) | ✅ | ❌ |
+There are **3 real strategies** plus a smart `auto` mode. Older mode names are kept as aliases so existing workflows and commit triggers keep working.
+
+| Mode | Description | Split? | `.full` file? | Legacy aliases |
+|------|-------------|:------:|:-------------:|----------------|
+| `auto` **(default)** | Smart: single file ≤2GB → `full_file`, otherwise `split` | maybe | maybe | — |
+| `full_file` | Keep the file whole, **never split** (best for GitHub Releases, up to 2GB) | ❌ | ❌ | `full_file_no_split` |
+| `split` | Keep raw file, split into chunks if larger than the limit | ✅ | ✅ | `normal`, `individual_split` |
+| `zip_split` | ZIP everything into one archive, split if larger than the limit | ✅ | ✅ | `zip`, `single_zip_split` |
+
+> **Where does my file end up?** Files larger than 100MB are **never** committed into the repo (GitHub blocks that). They are published as **GitHub Release assets** (up to 2GB each) when no `target_sites` are given, or uploaded to file hosts when `target_sites` is set. Look in the repo's **Releases** tab, not the code tree.
+
+> **`split_size` / `split_mode` only apply to `split` and `zip_split`.** In `full_file` (or when `auto` resolves to `full_file`) they are ignored — the file is copied whole.
 
 ### 🧠 Auto Split Size Detection
 
