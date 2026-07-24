@@ -18,10 +18,6 @@ on:
         description: 'رمز لینک (HTTP Basic Auth) - اختیاری'
         required: false
         type: string
-      file_password:
-        description: 'رمز داخلی فایل - اختیاری'
-        required: false
-        type: string
       target_sites:
         description: 'سایت‌های مقصد برای آپلود (با کاما جدا کنید)'
         required: true
@@ -37,7 +33,8 @@ on:
           - parts
   push:
     branches:
-      - "**"
+      - main
+      - master
 
 jobs:
   # Job 1: Parse inputs from commit message (for push triggers)
@@ -51,7 +48,6 @@ jobs:
       urls: ${{ steps.resolve.outputs.urls }}
       handling: ${{ steps.resolve.outputs.handling }}
       link_password: ${{ steps.resolve.outputs.link_password }}
-      file_password: ${{ steps.resolve.outputs.file_password }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,7 +61,6 @@ jobs:
             echo "urls=${{ github.event.inputs.url }}" >> $GITHUB_OUTPUT
             echo "handling=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
             echo "link_password=${{ github.event.inputs.link_password }}" >> $GITHUB_OUTPUT
-            echo "file_password=${{ github.event.inputs.file_password }}" >> $GITHUB_OUTPUT
           else
             MSG=$(git log -1 --pretty=%B)
             if echo "$MSG" | grep -qP 'github-zip:'; then
@@ -78,7 +73,6 @@ jobs:
             echo "urls=$URLS" >> $GITHUB_OUTPUT
             echo "handling=$HANDLING" >> $GITHUB_OUTPUT
             echo "link_password=" >> $GITHUB_OUTPUT
-            echo "file_password=" >> $GITHUB_OUTPUT
           fi
 
   # Job 2: Process using reusable workflow
@@ -94,6 +88,5 @@ jobs:
       target_sites: "${{ github.event.inputs.target_sites || 'erfanzadeh.ir' }}"
       upload_mode: "${{ github.event.inputs.upload_mode || 'full' }}"
       link_password: "${{ needs.parse.outputs.link_password }}"
-      file_password: "${{ needs.parse.outputs.file_password }}"
     secrets:
       SITE_CREDENTIALS: ${{ secrets.SITE_CREDENTIALS }}
