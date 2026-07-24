@@ -31,6 +31,16 @@ on:
         required: false
         type: string
         default: ""
+      split_size:
+        description: "Split chunk size in MB (used when split_mode=custom, default: 90)"
+        required: false
+        type: number
+        default: 90
+      split_mode:
+        description: "Split mode: auto (recommend based on file type) or custom (use split_size)"
+        required: false
+        type: string
+        default: "auto"
     secrets:
       SITE_CREDENTIALS:
         description: "Credentials for upload sites (site:username:password per line)"
@@ -150,6 +160,7 @@ jobs:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_SOURCE: ${{ inputs.source }}
           INPUT_HANDLING: ${{ inputs.handling }}
+          INPUT_SPLIT_SIZE: ${{ inputs.split_size || 90 }}
           INPUT_URLS: ${{ inputs.urls }}
           INPUT_LINK_PASS: ${{ inputs.link_password }}
           MEGA_SECRET_PASS: ${{ secrets.MEGA_LINK_PASSWORD }}
@@ -161,7 +172,54 @@ jobs:
 
           HANDLING="$INPUT_HANDLING"
           SOURCE="$INPUT_SOURCE"
-          LIMIT=$((90 * 1024 * 1024))
+          SPLIT_MODE="${INPUT_SPLIT_MODE:-auto}"
+          SPLIT_MB="${INPUT_SPLIT_SIZE:-90}"
+
+          # Auto-detect split size based on file type
+          if [ "$SPLIT_MODE" = "auto" ]; then
+            FIRST_FILE=$(ls -1 tmp_downloads 2>/dev/null | head -1)
+            if [ -n "$FIRST_FILE" ]; then
+              EXT="${FIRST_FILE##*.}"
+              EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
+              case "$EXT_LOWER" in
+                # Video files → 200MB (usually huge, fewer parts = easier download)
+                mp4|mkv|avi|mov|wmv|flv|m4v|webm|vob|mpg|mpeg|ts|3gp|ogv)
+                  SPLIT_MB=200
+                  ;;
+                # Audio files → 100MB
+                mp3|flac|wav|aac|ogg|wma|m4a|opus|ape|aiff)
+                  SPLIT_MB=100
+                  ;;
+                # Archives → 150MB
+                zip|rar|7z|tar|gz|bz2|xz|zst|tgz|tbz2)
+                  SPLIT_MB=150
+                  ;;
+                # Documents → 50MB
+                pdf|doc|docx|xls|xlsx|ppt|pptx|epub|mobi|odt|ods|odp|csv|tsv|md)
+                  SPLIT_MB=50
+                  ;;
+                # Images → 25MB
+                jpg|jpeg|png|gif|bmp|webp|svg|tiff|tif|ico|heic|avif)
+                  SPLIT_MB=25
+                  ;;
+                # ISOs and disk images → 200MB
+                iso|img|bin|cue|vhd|vmdk|nrg|mdf)
+                  SPLIT_MB=200
+                  ;;
+                # Executables → 100MB
+                exe|msi|apk|dmg|deb|rpm|AppImage|flatpak|snap)
+                  SPLIT_MB=100
+                  ;;
+                # Everything else → 90MB (default)
+                *)
+                  SPLIT_MB=90
+                  ;;
+              esac
+              echo "🧠 Auto mode: detected .${EXT_LOWER} → ${SPLIT_MB}MB chunks"
+            fi
+          fi
+
+          LIMIT=$((SPLIT_MB * 1024 * 1024))
 
           # Determine target base directory
           if [ "$SOURCE" = "mega" ] || [ "$SOURCE" = "pixeldrain" ]; then
@@ -201,8 +259,8 @@ jobs:
             mkdir -p "$TARGET_DIR"
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ Splitting $(( SIZE / 1024 / 1024 ))MB into 90MB chunks"
-              split -b 90M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${BASENAME}.part"
+              echo "✂️ Splitting $(( SIZE / 1024 / 1024 ))MB into ${SPLIT_MB}MB chunks"
+              split -b ${SPLIT_MB}M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${BASENAME}.part"
 
               printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
               printf 'echo Reconstructing archive.zip ...\r\n' >> "$TARGET_DIR/merge.bat"
@@ -240,8 +298,8 @@ jobs:
               # Create .full copy for upload_mode:full
               cp "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.full"
               if [ "$SIZE" -gt "$LIMIT" ]; then
-                echo "✂️ Splitting $BASENAME_CLEAN ($(( SIZE / 1024 / 1024 ))MB) into 90MB chunks"
-                split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
+                echo "✂️ Splitting $BASENAME_CLEAN ($(( SIZE / 1024 / 1024 ))MB) into ${SPLIT_MB}MB chunks"
+                split -b ${SPLIT_MB}M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
                 printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
                 printf 'echo Reconstructing %s ...\r\n' "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
                 printf 'copy /b "%s.part*" "%s" > nul\r\n' "$BASENAME_CLEAN" "$BASENAME_CLEAN" >> "$TARGET_DIR/merge.bat"
@@ -285,8 +343,8 @@ jobs:
             mkdir -p "$TARGET_DIR"
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ Splitting archive into 90MB chunks"
-              split -b 90M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${BASENAME}.part"
+              echo "✂️ Splitting archive into ${SPLIT_MB}MB chunks"
+              split -b ${SPLIT_MB}M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${BASENAME}.part"
               printf '#!/bin/bash\ncd "$(dirname "$0")"\ncat "archive.zip.part"* > "archive.zip"\necho "Done"\n' > "$TARGET_DIR/merge.sh"
               chmod +x "$TARGET_DIR/merge.sh"
             else
@@ -306,6 +364,8 @@ jobs:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_HANDLING: ${{ inputs.handling }}
           INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_SPLIT_SIZE: ${{ inputs.split_size || 90 }}
+          INPUT_SPLIT_MODE: ${{ inputs.split_mode || 'auto' }}
 
       - name: Upload to ALL target sites
         if: inputs.target_sites != ''
@@ -413,6 +473,7 @@ jobs:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_SOURCE: ${{ inputs.source }}
           INPUT_HANDLING: ${{ inputs.handling }}
+          INPUT_SPLIT_SIZE: ${{ inputs.split_size || 90 }}
           INPUT_HANDLING: ${{ inputs.handling }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         id: release
@@ -451,8 +512,9 @@ jobs:
           # Use git add -f for workflow-generated files in .gitignore
           git add -f upload_results.txt upload_results.json logs/ 2>/dev/null || true
 
-          # Add small download files only (exclude .part*, .full, and large files)
-          find downloads/ -type f -size -90M ! -name '*.part*' ! -name '*.full' -print0 2>/dev/null | xargs -0 git add 2>/dev/null || true
+          # Add small download files only (exclude .part*, .full, and files >= split_size)
+          SPLIT_MB="${INPUT_SPLIT_SIZE:-90}"
+          find downloads/ -type f -size -"${SPLIT_MB}"M ! -name '*.part*' ! -name '*.full' -print0 2>/dev/null | xargs -0 git add 2>/dev/null || true
 
           if ! git diff --cached --quiet; then
             echo "✅ Changes detected, committing..."
@@ -466,3 +528,4 @@ jobs:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_SOURCE: ${{ inputs.source }}
           INPUT_HANDLING: ${{ inputs.handling }}
+          INPUT_SPLIT_SIZE: ${{ inputs.split_size || 90 }}
