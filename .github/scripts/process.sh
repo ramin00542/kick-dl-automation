@@ -56,7 +56,7 @@ if [ "$HANDLING" = "single_zip_split" ]; then
         # Preserve original filename for single files
         if [[ "$SOURCE_BASENAME" == *.zip ]]; then
             # Already a zip, use as-is (no extra copy needed)
-            ARCHIVE_NAME="$SOURCE_FILE"
+            ARCHIVE_NAME="tmp_downloads/$SOURCE_BASENAME"
         else
             # Create a zip with original filename
             ARCHIVE_NAME="tmp_downloads/${SOURCE_BASENAME}.zip"
