@@ -64,6 +64,8 @@ jobs:
       - name: Setup
         run: |
           set -euo pipefail
+          # Clean previous run artifacts to prevent stale file conflicts
+          rm -rf downloads tmp_downloads
           mkdir -p logs downloads tmp_downloads
           LOG_FILE="logs/run_$(date +%Y%m%d_%H%M%S).log"
           echo "LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
