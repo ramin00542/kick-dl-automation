@@ -51,24 +51,35 @@ if [ "$HANDLING" = "single_zip_split" ]; then
     log_info "Creating ZIP archive from all files"
     if [ "$FILE_COUNT" -eq 1 ]; then
         # shellcheck disable=SC2012
-        SOURCE_FILE=$(ls tmp_downloads | head -1)
-        zip -j "tmp_downloads/archive.zip" "tmp_downloads/$SOURCE_FILE"
-        rm -f "tmp_downloads/$SOURCE_FILE"
+        SOURCE_FILE="$(ls tmp_downloads | head -1)"
+        SOURCE_BASENAME=$(basename "$SOURCE_FILE")
+        # Preserve original filename for single files
+        if [[ "$SOURCE_BASENAME" == *.zip ]]; then
+            # Already a zip, use as-is (no extra copy needed)
+            ARCHIVE_NAME="$SOURCE_FILE"
+        else
+            # Create a zip with original filename
+            ARCHIVE_NAME="tmp_downloads/${SOURCE_BASENAME}.zip"
+            zip -j "$ARCHIVE_NAME" "tmp_downloads/$SOURCE_FILE"
+            rm -f "tmp_downloads/$SOURCE_FILE"
+        fi
     else
         zip -j "tmp_downloads/archive.zip" tmp_downloads/*
-        find tmp_downloads -maxdepth 1 -type f ! -name 'archive.zip' -delete
+        find tmp_downloads -maxdepth 1 -type f ! -name '*.zip' -delete
+        ARCHIVE_NAME="tmp_downloads/archive.zip"
     fi
 
-    FINAL_FILE="tmp_downloads/archive.zip"
+    FINAL_FILE="$ARCHIVE_NAME"
+    ARCHIVE_BASENAME=$(basename "$ARCHIVE_NAME")
     SIZE=$(stat -c%s "$FINAL_FILE")
-    TARGET_DIR="$TARGET_BASE/archive.zip"
+    TARGET_DIR="$TARGET_BASE/$ARCHIVE_BASENAME"
     mkdir -p "$TARGET_DIR"
 
     if [ "$SIZE" -gt "$LIMIT" ]; then
-        log_info "Splitting $(($SIZE / 1024 / 1024))MB into ${SPLIT_MB}MB chunks"            split -b "${SPLIT_MB}M" -d -a 2 "$FINAL_FILE" "$TARGET_DIR/archive.zip.part"
-            generate_merge_scripts "$TARGET_DIR" "archive.zip"
+        log_info "Splitting $(($SIZE / 1024 / 1024))MB into ${SPLIT_MB}MB chunks"            split -b "${SPLIT_MB}M" -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${ARCHIVE_BASENAME}.part"
+            generate_merge_scripts "$TARGET_DIR" "$ARCHIVE_BASENAME"
     else
-        cp "$FINAL_FILE" "$TARGET_DIR/archive.zip"
+        cp "$FINAL_FILE" "$TARGET_DIR/$ARCHIVE_BASENAME"
         log_info "File is under limit, stored as-is"
     fi
     rm -rf tmp_downloads

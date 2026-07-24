@@ -36,19 +36,25 @@ fi
 RELEASE_TAG="release-$(date +%Y%m%d-%H%M%S)"
 log_step "Creating GitHub Release: $RELEASE_TAG"
 
-echo "Files to release:"
-# shellcheck disable=SC2044
+# Count total files and check for potential duplicate basenames
+FILE_COUNT=0
+DUPE_CHECK=""
 while IFS= read -r F; do
-    F_SIZE=$(stat -c%s "$F" 2>/dev/null || echo 0)
-    F_SIZE_MB=$((F_SIZE / 1024 / 1024))
-    log_info "  $(basename "$F") (${F_SIZE_MB}MB)"
+    FILE_COUNT=$((FILE_COUNT + 1))
 done <<< "$RELEASE_FILES"
+
+log_info "Found $FILE_COUNT file(s) to release"
+
+if [ "$FILE_COUNT" -eq 0 ]; then
+    log_warn "No files found for release"
+    exit 0
+fi
 
 # Create release notes
 NOTES_FILE=$(mktemp)
 create_release_notes "$SOURCE" "$HANDLING" > "$NOTES_FILE"
-# shellcheck disable=SC2044
 while IFS= read -r F; do
+    [ -z "$F" ] && continue
     F_SIZE=$(stat -c%s "$F" 2>/dev/null || echo 0)
     F_SIZE_MB=$((F_SIZE / 1024 / 1024))
     F_NAME=$(basename "$F")
@@ -56,18 +62,42 @@ while IFS= read -r F; do
 done <<< "$RELEASE_FILES"
 printf '\n---\n*Automated release by GitHub Actions*\n' >> "$NOTES_FILE"
 
-# Build file array for safe filename handling
+# Build file list for release (gh handles unique basenames by using path)
 RELEASE_ARGS=()
 while IFS= read -r F; do
+    [ -z "$F" ] && continue
     RELEASE_ARGS+=("$F")
 done <<< "$RELEASE_FILES"
 
-# Create the release
-gh release create "$RELEASE_TAG" \
+# First attempt: create release with all files at once
+log_info "Creating release and uploading assets..."
+if gh release create "$RELEASE_TAG" \
     --title "Download from $SOURCE - $(date +%Y-%m-%d)" \
     --notes-file "$NOTES_FILE" \
-    -- "${RELEASE_ARGS[@]}"
+    -- "${RELEASE_ARGS[@]}" 2>/dev/null; then
+    log_info "Release created successfully"
+else
+    log_warn "Bulk upload failed (likely duplicate asset names), trying individual uploads..."
+    
+    # Create release without assets first
+    gh release create "$RELEASE_TAG" \
+        --title "Download from $SOURCE - $(date +%Y-%m-%d)" \
+        --notes-file "$NOTES_FILE" 2>/dev/null || true
+    
+    # Upload files one by one, skipping duplicates
+    while IFS= read -r F; do
+        [ -z "$F" ] && continue
+        F_NAME=$(basename "$F")
+        log_info "Uploading: $F_NAME"
+        if gh release upload "$RELEASE_TAG" "$F" --clobber 2>/dev/null; then
+            log_info "  ✓ $F_NAME uploaded"
+        else
+            log_warn "  ⚠ Could not upload $F_NAME, skipping"
+        fi
+    done <<< "$RELEASE_FILES"
+fi
 
 rm -f "$NOTES_FILE"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-unknown/repo}"
-log_info "Release created: https://github.com/${GITHUB_REPOSITORY}/releases/tag/$RELEASE_TAG"
+RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/$RELEASE_TAG"
+log_info "Release: $RELEASE_URL"
