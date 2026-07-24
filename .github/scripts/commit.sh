@@ -6,7 +6,6 @@
 # Input (env vars):
 #   INPUT_SOURCE       — Source type (for commit message)
 #   INPUT_HANDLING     — Handling mode (for commit message)
-#   INPUT_SPLIT_SIZE   — Split size threshold for filtering files (default: 90)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,7 +14,11 @@ source "$SCRIPT_DIR/common.sh"
 # ── Validate inputs ─────────────────────────────────────────────────────────
 SOURCE="${INPUT_SOURCE:-unknown}"
 HANDLING="${INPUT_HANDLING:-unknown}"
-SPLIT_MB="${INPUT_SPLIT_SIZE:-90}"
+
+# GitHub hard-blocks any single file >100MB on push. Use a safe ceiling well
+# under that so a large auto-detected split size can never cause a failed push.
+# (This is independent of the split chunk size used during processing.)
+COMMIT_MAX_MB=95
 
 log_step "Preparing commit"
 
@@ -37,7 +40,7 @@ find downloads/ -type f 2>/dev/null | head -20 || echo "  (no files)"
 git add -f upload_results.txt upload_results.json logs/ 2>/dev/null || true
 
 # Add small download files only (exclude .part*, .full, and large files)
-find downloads/ -type f -size -"${SPLIT_MB}"M \
+find downloads/ -type f -size -"${COMMIT_MAX_MB}"M \
     ! -name '*.part*' ! -name '*.full' \
     -print0 2>/dev/null | xargs -0 git add 2>/dev/null || true
 

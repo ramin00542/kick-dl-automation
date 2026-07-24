@@ -1,150 +1,78 @@
 #!/bin/bash
 # =============================================================================
-# process.sh — Process downloaded files (zip / split / preserve)
+# process.sh — Process downloaded files (full / split / zip_split)
 # =============================================================================
-# Depends on: common.sh
+# Thin orchestrator. All strategy logic lives in lib/handling.sh.
+#
+# Depends on: common.sh, lib/handling.sh
 # Input (env vars):
-#   INPUT_HANDLING     — Handling mode: normal, zip, single_zip_split,
-#                        full_file_no_split, individual_split
+#   INPUT_HANDLING     — Handling mode. Canonical: full_file, split, zip_split,
+#                        auto. Legacy aliases still accepted (full_file_no_split,
+#                        normal, individual_split, zip, single_zip_split).
 #   INPUT_SOURCE       — Source type (for target directory naming)
-#   INPUT_SPLIT_SIZE   — Custom split size in MB (default: 90)
-#   INPUT_SPLIT_MODE   — auto or custom (default: auto)
+#   INPUT_SPLIT_SIZE   — Custom split size in MB (default: 90). ONLY used by
+#                        split / zip_split modes when INPUT_SPLIT_MODE=custom.
+#                        Ignored entirely by full_file.
+#   INPUT_SPLIT_MODE   — auto (recommend size from file type) or custom
 # =============================================================================
+
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
+source "$SCRIPT_DIR/lib/handling.sh"
 
-# ── Validate inputs ─────────────────────────────────────────────────────────
-HANDLING="${INPUT_HANDLING:-normal}"
+SRC_DIR="tmp_downloads"
+
+# ── Resolve inputs ──────────────────────────────────────────────────────────
+RAW_HANDLING="${INPUT_HANDLING:-auto}"
 SOURCE="${INPUT_SOURCE:-direct}"
 SPLIT_MB="${INPUT_SPLIT_SIZE:-90}"
 SPLIT_MODE="${INPUT_SPLIT_MODE:-auto}"
 
-# normal = v1 behavior (keep original names, split if needed)
-if [ "$HANDLING" = "normal" ]; then
-    HANDLING="individual_split"
-fi
+HANDLING=$(normalize_handling "$RAW_HANDLING" "$SRC_DIR")
 
-# Auto-detect split size
-if [ "$SPLIT_MODE" = "auto" ]; then
-    DETECTED=$(detect_split_size "tmp_downloads" "$SPLIT_MB")
+# Auto-detect a sensible split size (only matters for split / zip_split).
+if [ "$SPLIT_MODE" = "auto" ] && [ "$HANDLING" != "full_file" ]; then
+    DETECTED=$(detect_split_size "$SRC_DIR" "$SPLIT_MB")
     if [ "$DETECTED" != "$SPLIT_MB" ]; then
         # shellcheck disable=SC2012
-        FIRST_FILE=$(ls -1 tmp_downloads 2>/dev/null | head -1)
-        EXT="${FIRST_FILE##*.}"
-        log_info "Auto mode: detected .${EXT} → ${DETECTED}MB chunks"
-        SPLIT_MB=$DETECTED
+        FIRST_FILE=$(ls -1 "$SRC_DIR" 2>/dev/null | head -1)
+        log_info "Auto mode: detected .${FIRST_FILE##*.} → ${DETECTED}MB chunks"
+        SPLIT_MB="$DETECTED"
     fi
 fi
 
-LIMIT=$((SPLIT_MB * 1024 * 1024))
 TARGET_BASE=$(get_target_base "$SOURCE")
 mkdir -p "$TARGET_BASE"
 
 # shellcheck disable=SC2012
-FILE_COUNT=$(ls -1 tmp_downloads 2>/dev/null | grep -v '^$' | wc -l)
-log_step "Processing $FILE_COUNT file(s) | mode: $HANDLING | split: ${SPLIT_MB}MB"
-log_info "Target: $TARGET_BASE"
-
-# ── single_zip_split: ZIP everything, split if needed ───────────────────────
-if [ "$HANDLING" = "single_zip_split" ]; then
-    log_info "Creating ZIP archive from all files"
-    if [ "$FILE_COUNT" -eq 1 ]; then
-        # shellcheck disable=SC2012
-        SOURCE_FILE="$(ls tmp_downloads | head -1)"
-        SOURCE_BASENAME=$(basename "$SOURCE_FILE")
-        # Preserve original filename for single files
-        if [[ "$SOURCE_BASENAME" == *.zip ]]; then
-            # Already a zip, use as-is (no extra copy needed)
-            ARCHIVE_NAME="tmp_downloads/$SOURCE_BASENAME"
-        else
-            # Create a zip with original filename
-            ARCHIVE_NAME="tmp_downloads/${SOURCE_BASENAME}.zip"
-            zip -j "$ARCHIVE_NAME" "tmp_downloads/$SOURCE_FILE"
-            rm -f "tmp_downloads/$SOURCE_FILE"
-        fi
-    else
-        zip -j "tmp_downloads/archive.zip" tmp_downloads/*
-        find tmp_downloads -maxdepth 1 -type f ! -name '*.zip' -delete
-        ARCHIVE_NAME="tmp_downloads/archive.zip"
-    fi
-
-    FINAL_FILE="$ARCHIVE_NAME"
-    ARCHIVE_BASENAME=$(basename "$ARCHIVE_NAME")
-    SIZE=$(stat -c%s "$FINAL_FILE")
-    TARGET_DIR="$TARGET_BASE/$ARCHIVE_BASENAME"
-    mkdir -p "$TARGET_DIR"
-
-    if [ "$SIZE" -gt "$LIMIT" ]; then
-        log_info "Splitting $(($SIZE / 1024 / 1024))MB into ${SPLIT_MB}MB chunks"            split -b "${SPLIT_MB}M" -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${ARCHIVE_BASENAME}.part"
-            generate_merge_scripts "$TARGET_DIR" "$ARCHIVE_BASENAME"
-    else
-        cp "$FINAL_FILE" "$TARGET_DIR/$ARCHIVE_BASENAME"
-        log_info "File is under limit, stored as-is"
-    fi
-    rm -rf tmp_downloads
-
-# ── full_file_no_split: Just copy, no processing ────────────────────────────
-elif [ "$HANDLING" = "full_file_no_split" ]; then
-    for FILE in tmp_downloads/*; do
-        [ -f "$FILE" ] || continue
-        BASENAME=$(basename "$FILE")
-        TARGET_DIR="$TARGET_BASE/$BASENAME"
-        mkdir -p "$TARGET_DIR"
-        cp "$FILE" "$TARGET_DIR/$BASENAME"
-    done
-    rm -rf tmp_downloads
-    log_info "Files preserved as-is (no split)"
-
-# ── individual_split: Each file individually, split if needed ───────────────
-elif [ "$HANDLING" = "individual_split" ]; then
-    for FILE in tmp_downloads/*; do
-        [ -f "$FILE" ] || continue
-        SIZE=$(stat -c%s "$FILE")
-        BASENAME_CLEAN=$(basename "$FILE")
-        BASENAME_CLEAN="${BASENAME_CLEAN%%\?*}"
-        TARGET_DIR="$TARGET_BASE/$BASENAME_CLEAN"
-        mkdir -p "$TARGET_DIR"
-
-        # Create .full copy for full upload mode
-        cp "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.full"
-
-        if [ "$SIZE" -gt "$LIMIT" ]; then
-            log_info "Splitting $BASENAME_CLEAN ($(($SIZE / 1024 / 1024))MB)"
-            split -b "${SPLIT_MB}M" -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
-            generate_merge_scripts "$TARGET_DIR" "$BASENAME_CLEAN"
-        else
-            cp "$FILE" "$TARGET_DIR/$BASENAME_CLEAN"
-        fi
-    done
-    generate_master_script "$TARGET_BASE"
-    rm -rf tmp_downloads
-
-# ── zip: ZIP all files, split if needed ─────────────────────────────────────
-elif [ "$HANDLING" = "zip" ]; then
-    ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
-    zip -j "$ARCHIVE_NAME" tmp_downloads/*
-    find tmp_downloads -maxdepth 1 -type f ! -name '*.zip' -delete
-    find tmp_downloads -maxdepth 1 -name 'archive_*.zip' -delete 2>/dev/null || true
-    mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
-
-    FINAL_FILE="tmp_downloads/archive.zip"
-    SIZE=$(stat -c%s "$FINAL_FILE")
-    TARGET_DIR="$TARGET_BASE/archive.zip"
-    mkdir -p "$TARGET_DIR"
-
-    if [ "$SIZE" -gt "$LIMIT" ]; then
-        log_info "Splitting archive into ${SPLIT_MB}MB chunks"            split -b "${SPLIT_MB}M" -d -a 2 "$FINAL_FILE" "$TARGET_DIR/archive.zip.part"
-            generate_merge_scripts "$TARGET_DIR" "archive.zip"
-    else
-        cp "$FINAL_FILE" "$TARGET_DIR/archive.zip"
-    fi
-    rm -rf tmp_downloads
-
-else
-    log_error "Unknown handling mode: $HANDLING"
+FILE_COUNT=$(ls -1 "$SRC_DIR" 2>/dev/null | grep -vc '^$' || echo 0)
+if [ "$FILE_COUNT" -eq 0 ]; then
+    log_error "No files found in $SRC_DIR to process"
     exit 1
 fi
+
+log_step "Processing $FILE_COUNT file(s) | mode: $HANDLING | split: ${SPLIT_MB}MB"
+log_info "Target: $TARGET_BASE"
+if [ "$RAW_HANDLING" != "$HANDLING" ]; then
+    log_info "(requested '$RAW_HANDLING' → resolved to '$HANDLING')"
+fi
+
+# ── Dispatch to the chosen strategy ─────────────────────────────────────────
+case "$HANDLING" in
+    full_file)
+        handle_full_file "$SRC_DIR" "$TARGET_BASE" ;;
+    split)
+        handle_split "$SRC_DIR" "$TARGET_BASE" "$SPLIT_MB" ;;
+    zip_split)
+        handle_zip_split "$SRC_DIR" "$TARGET_BASE" "$SPLIT_MB" ;;
+    *)
+        log_error "Unresolved handling mode: $HANDLING"
+        exit 1 ;;
+esac
+
+rm -rf "$SRC_DIR"
 
 log_info "Processing complete!"
 echo "Files in downloads directory:"
