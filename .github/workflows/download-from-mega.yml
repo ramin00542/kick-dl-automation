@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: 'منبع دانلود را انتخاب کنید'
+        description: '📦 mega=از mega.nz (پشتیبانی رمز), pixeldrain=از pixeldrain.com (API)'
         required: true
         default: 'pixeldrain'
         type: choice
@@ -12,17 +12,17 @@ on:
           - mega
           - pixeldrain
       mega_link:
-        description: 'لینک فایل یا پوشه در MEGA (در صورت انتخاب MEGA)'
+        description: '🔗 لینک فایل یا پوشه MEGA (فقط وقتی source=mega). مثال: https://mega.nz/file/abc123#key'
         required: false
         default: ''
         type: string
       pixeldrain_link:
-        description: 'لینک فایل در Pixeldrain (در صورت انتخاب Pixeldrain)'
+        description: '🔗 لینک فایل Pixeldrain (فقط وقتی source=pixeldrain). مثال: https://pixeldrain.com/u/abc123'
         required: false
         default: ''
         type: string
       handling:
-        description: 'نحوه برخورد با فایل‌های دانلود شده'
+        description: '⚙️ normal=نگه‌داشتن اسم+split, zip=ZIP+split, single_zip=ZIP+split, full=کپی ساده, individual=جدا+split'
         required: false
         default: 'individual_split'
         type: choice
@@ -33,12 +33,12 @@ on:
           - full_file_no_split
           - individual_split
       split_size:
-        description: 'حجم هر تکه بر حسب MB (فقط در حالت custom استفاده میشه)'
+        description: '📏 حجم هر تکه بر حسب مگابایت (پیش‌فرض 90، فقط در حالت custom استفاده میشه)'
         required: false
         default: 90
         type: string
       split_mode:
-        description: 'نحوه تعیین سایز تکه‌ها'
+        description: '🤖 auto=هوشمند بر اساس نوع فایل, custom=دستی با split_size'
         required: false
         default: 'auto'
         type: choice

@@ -1,14 +1,14 @@
-name: Download (Split if Needed) & Upload to File Hosts
+name: 📥 دانلود فایل از لینک مستقیم و آپلود به سایت‌های میزبان
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'لینک فایل (یا چند لینک با فاصله) - پشتیبانی از mega.nz'
+        description: 'لینک فایل مستقیم (یا چند لینک با فاصله). پشتیبانی از لینک‌های معمولی و لینک‌های دارای Basic Auth'
         required: true
         type: string
       mode:
-        description: 'نحوه پردازش فایل‌ها'
+        description: 'normal=نگه‌داشتن اسم+split, zip=ZIP+split, single_zip=ZIP+split, full=کپی ساده, individual=جدا+split'
         default: 'normal'
         type: choice
         options:
@@ -18,21 +18,21 @@ on:
           - full_file_no_split
           - individual_split
       link_password:
-        description: 'رمز لینک (HTTP Basic Auth) - اختیاری'
+        description: '🔑 رمز لینک (HTTP Basic Auth) — اختیاری. فرمت: username:password'
         required: false
         type: string
       target_sites:
-        description: 'سایت‌های مقصد برای آپلود (با کاما جدا کنید)'
+        description: '🌐 سایت‌های مقصد (با کاما جدا کنید). پشتیبانی: gofile.io, pixeldrain.com, catbox.moe, file.io, 0x0.st, buzzheavier.com, filebin.net, krakenfiles.com, 1fichier.com, mixdrop.co, erfanzadeh.ir'
         required: true
         type: string
         default: 'erfanzadeh.ir'
       split_size:
-        description: 'حجم هر تکه بر حسب MB (فقط در حالت custom استفاده میشه)'
+        description: '📏 حجم هر تکه بر حسب مگابایت (پیش‌فرض 90، فقط در حالت custom استفاده میشه)'
         required: false
         default: 90
         type: string
       split_mode:
-        description: 'نحوه تعیین سایز تکه‌ها'
+        description: '🤖 auto=هوشمند بر اساس نوع فایل, custom=دستی با split_size'
         required: false
         default: 'auto'
         type: choice
@@ -40,7 +40,7 @@ on:
           - auto
           - custom
       upload_mode:
-        description: 'حالت آپلود (تک فایل کامل یا تکه تکه)'
+        description: '📤 full=فایل کامل آپلود بشه, parts=تکه‌های split شده آپلود بشن'
         required: true
         default: 'full'
         type: choice
