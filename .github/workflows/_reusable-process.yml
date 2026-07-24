@@ -12,10 +12,10 @@ on:
         required: true
         type: string
       handling:
-        description: "File handling mode: normal, zip, single_zip_split, full_file_no_split, individual_split"
+        description: "File handling mode: auto, full_file, split, zip_split (legacy aliases still accepted)"
         required: false
         type: string
-        default: "normal"
+        default: "auto"
       target_sites:
         description: "Comma-separated list of upload target sites"
         required: false
@@ -140,7 +140,6 @@ jobs:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_SOURCE: ${{ inputs.source }}
           INPUT_HANDLING: ${{ inputs.handling }}
-          INPUT_SPLIT_SIZE: ${{ inputs.split_size || 90 }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
 
       - name: Upload artifacts

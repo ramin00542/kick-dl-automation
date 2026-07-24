@@ -22,23 +22,22 @@ on:
         default: ''
         type: string
       handling:
-        description: '⚙️ normal=نگه‌داشتن اسم+split, zip=ZIP+split, single_zip=ZIP+split, full=کپی ساده, individual=جدا+split'
+        description: '⚙️ نحوه ذخیره | auto=هوشمند (توصیه‌شده), full_file=فایل کامل بدون تیکه (تا ۲گیگ، مناسب Release), split=تیکه‌تیکه, zip_split=ZIP+تیکه'
         required: false
-        default: 'individual_split'
+        default: 'auto'
         type: choice
         options:
-          - normal
-          - zip
-          - single_zip_split
-          - full_file_no_split
-          - individual_split
+          - auto
+          - full_file
+          - split
+          - zip_split
       split_size:
-        description: '📏 حجم هر تکه بر حسب مگابایت (پیش‌فرض 90، فقط در حالت custom استفاده میشه)'
+        description: '📏 حجم هر تکه (مگابایت). ⚠️ فقط وقتی handling=split یا zip_split و split_mode=custom اثر دارد. در full_file نادیده گرفته می‌شود.'
         required: false
         default: 90
         type: string
       split_mode:
-        description: '🤖 auto=هوشمند بر اساس نوع فایل, custom=دستی با split_size'
+        description: '🤖 نحوه تعیین حجم تکه‌ها | auto=هوشمند بر اساس نوع فایل, custom=دستی با split_size. ⚠️ در حالت full_file بی‌اثر است.'
         required: false
         default: 'auto'
         type: choice
