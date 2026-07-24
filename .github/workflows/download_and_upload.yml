@@ -84,6 +84,8 @@ jobs:
   # Job 2: Process using reusable workflow
   process:
     needs: parse
+    permissions:
+      contents: write
     uses: ./.github/workflows/_reusable-process.yml
     with:
       source: "direct"
