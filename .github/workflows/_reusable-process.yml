@@ -149,6 +149,7 @@ jobs:
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_HANDLING: ${{ inputs.handling }}
           INPUT_URLS: ${{ inputs.urls }}
           INPUT_LINK_PASS: ${{ inputs.link_password }}
           MEGA_SECRET_PASS: ${{ secrets.MEGA_LINK_PASSWORD }}
@@ -412,6 +413,7 @@ jobs:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_SOURCE: ${{ inputs.source }}
           INPUT_HANDLING: ${{ inputs.handling }}
+          INPUT_HANDLING: ${{ inputs.handling }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         id: release
 
@@ -463,3 +465,4 @@ jobs:
         env:
           LOG_FILE: ${{ env.LOG_FILE }}
           INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_HANDLING: ${{ inputs.handling }}
