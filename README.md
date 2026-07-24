@@ -1,12 +1,12 @@
-# 🚀 KickDL — GitHub Actions Download Automation
+# 🚀 mirror-to-github — Mirror Any File to GitHub
 
-> **Download files from MEGA, Pixeldrain, or direct links — then split, zip, upload to file hosts, or create GitHub Releases — all automatically via GitHub Actions.**
+> **Download files from MEGA, Pixeldrain, or direct links — then split, zip, upload to file hosts, or mirror them straight to GitHub Releases — all automatically via GitHub Actions.**
 
 ---
 
 ## 📋 Overview
 
-KickDL is a professional GitHub Actions automation suite that:
+**mirror-to-github** is a professional GitHub Actions automation suite that:
 
 1. **Downloads** files from MEGA, Pixeldrain, or direct HTTP links
 2. **Processes** them: zip, split into chunks (auto-detect optimal size), or preserve as-is
@@ -81,7 +81,7 @@ There are **3 real strategies** plus a smart `auto` mode. Older mode names are k
 
 ### 🧠 Auto Split Size Detection
 
-When `split_mode` is set to `auto` (default), KickDL examines the first downloaded file's extension and picks the optimal chunk size:
+When `split_mode` is set to `auto` (default), mirror-to-github examines the first downloaded file's extension and picks the optimal chunk size:
 
 | File Type | Examples | Chunk Size |
 |-----------|----------|:----------:|
