@@ -24,12 +24,27 @@ on:
       handling:
         description: 'نحوه برخورد با فایل‌های دانلود شده'
         required: false
-        default: 'single_zip_split'
+        default: 'individual_split'
         type: choice
         options:
+          - normal
+          - zip
           - single_zip_split
           - full_file_no_split
           - individual_split
+      split_size:
+        description: 'حجم هر تکه بر حسب MB (فقط در حالت custom استفاده میشه)'
+        required: false
+        default: 90
+        type: string
+      split_mode:
+        description: 'نحوه تعیین سایز تکه‌ها'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - custom
   push:
     branches:
       - main
@@ -103,5 +118,7 @@ jobs:
       source: "${{ needs.parse.outputs.source }}"
       urls: "${{ needs.parse.outputs.urls }}"
       handling: "${{ needs.parse.outputs.handling }}"
+      split_size: ${{ github.event.inputs.split_size || 90 }}
+      split_mode: ${{ github.event.inputs.split_mode || 'auto' }}
     secrets:
       MEGA_LINK_PASSWORD: ${{ secrets.MEGA_LINK_PASSWORD }}
