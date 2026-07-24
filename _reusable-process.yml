@@ -1,0 +1,377 @@
+name: "_Reusable: Download, Process & Upload"
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: "Source type: direct, mega, pixeldrain"
+        required: true
+        type: string
+      urls:
+        description: "Space-separated list of download URLs"
+        required: true
+        type: string
+      handling:
+        description: "File handling mode: normal, zip, single_zip_split, full_file_no_split, individual_split"
+        required: false
+        type: string
+        default: "normal"
+      target_sites:
+        description: "Comma-separated list of upload target sites"
+        required: false
+        type: string
+        default: ""
+      upload_mode:
+        description: "Upload mode: full or parts"
+        required: false
+        type: string
+        default: "full"
+      link_password:
+        description: "Link password (for HTTP Basic Auth or MEGA)"
+        required: false
+        type: string
+        default: ""
+      file_password:
+        description: "File password (internal archive password)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SITE_CREDENTIALS:
+        description: "Credentials for upload sites (site:username:password per line)"
+        required: false
+      MEGA_LINK_PASSWORD:
+        description: "MEGA link password"
+        required: false
+      MEGA_FILE_PASSWORD:
+        description: "MEGA file password"
+        required: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create log directory
+        run: |
+          mkdir -p logs
+          LOG_FILE="logs/run_$(date +%Y%m%d_%H%M%S).log"
+          echo "LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
+          echo "Starting workflow at $(date)" | tee -a "$LOG_FILE"
+          echo "Source: ${{ inputs.source }}" | tee -a "$LOG_FILE"
+
+      - name: Install dependencies
+        run: |
+          set -e -x
+          exec > >(tee -a "$LOG_FILE") 2>&1
+          sudo apt-get update
+          sudo apt-get install -y curl zip unzip wget megatools google-chrome-stable
+          pip install selenium webdriver-manager
+          python -c "from webdriver_manager.chrome import ChromeDriverManager; ChromeDriverManager().install()"
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+
+      - name: Download files
+        run: |
+          set -e -x
+          exec > >(tee -a "$LOG_FILE") 2>&1
+
+          URLS="${{ inputs.urls }}"
+          SOURCE="${{ inputs.source }}"
+          LINK_PASS="${{ inputs.link_password }}"
+          FILE_PASS="${{ inputs.file_password }}"
+
+          # Resolve passwords from secrets if empty
+          if [ -z "$LINK_PASS" ] && [ "$SOURCE" = "mega" ]; then
+            LINK_PASS="${{ secrets.MEGA_LINK_PASSWORD || '' }}"
+          fi
+          if [ -z "$FILE_PASS" ]; then
+            FILE_PASS="${{ secrets.MEGA_FILE_PASSWORD || '' }}"
+          fi
+
+          echo "Source: $SOURCE"
+          echo "URLs: $URLS"
+
+          mkdir -p tmp_downloads downloads
+
+          for URL in $URLS; do
+            echo "⬇️ Downloading $URL"
+            cd tmp_downloads
+
+            case "$SOURCE" in
+              mega)
+                echo "MEGA link detected. Using megatools..."
+                if [ -n "$LINK_PASS" ]; then
+                  megatools dl --password "$LINK_PASS" "$URL"
+                else
+                  megatools dl "$URL"
+                fi
+                ;;
+              pixeldrain)
+                echo "Pixeldrain link detected. Using API..."
+                FILE_ID=$(echo "$URL" | grep -oP 'pixeldrain\.com/(?:u|api/file)/\K[a-zA-Z0-9]+')
+                if [ -z "$FILE_ID" ]; then
+                  echo "❌ Could not extract file ID from: $URL"
+                  exit 1
+                fi
+                curl -LJO --fail --silent --show-error "https://pixeldrain.com/api/file/$FILE_ID"
+                ;;
+              direct)
+                if [ -n "$LINK_PASS" ] && [[ "$LINK_PASS" == *:* ]]; then
+                  USER="${LINK_PASS%%:*}"
+                  PASS="${LINK_PASS#*:}"
+                  curl -L -u "$USER:$PASS" -O "$URL"
+                else
+                  curl -L -O "$URL"
+                fi
+                ;;
+              *)
+                echo "❌ Unknown source: $SOURCE"
+                exit 1
+                ;;
+            esac
+
+            cd ..
+          done
+
+          find tmp_downloads -type f -exec mv {} tmp_downloads/ \;
+          rm -rf tmp_downloads/*/
+
+          echo "✅ Downloads complete"
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+
+      - name: Process files (zip/split)
+        run: |
+          set -e -x
+          exec > >(tee -a "$LOG_FILE") 2>&1
+
+          HANDLING="${{ inputs.handling }}"
+          LINK_PASS="${{ inputs.link_password }}"
+          FILE_PASS="${{ inputs.file_password }}"
+          SOURCE="${{ inputs.source }}"
+          LIMIT=$((90 * 1024 * 1024))
+
+          # Resolve passwords from secrets if empty
+          if [ -z "$LINK_PASS" ] && [ "$SOURCE" = "mega" ]; then
+            LINK_PASS="${{ secrets.MEGA_LINK_PASSWORD || '' }}"
+          fi
+          if [ -z "$FILE_PASS" ]; then
+            FILE_PASS="${{ secrets.MEGA_FILE_PASSWORD || '' }}"
+          fi
+
+          # Determine target base directory
+          if [ "$SOURCE" = "mega" ] || [ "$SOURCE" = "pixeldrain" ]; then
+            TARGET_BASE="downloads/${SOURCE^^}"
+          else
+            TARGET_BASE="downloads/DIRECT"
+          fi
+          mkdir -p "$TARGET_BASE"
+
+          # For direct source with 'normal' handling: use the same logic as download_and_upload.yml
+          if [ "$HANDLING" = "normal" ]; then
+            HANDLING="single_zip_split"
+          fi
+
+          # Count files
+          FILE_COUNT=$(ls -1 tmp_downloads 2>/dev/null | wc -l)
+          echo "Downloaded files: $FILE_COUNT"
+          echo "Handling mode: $HANDLING"
+
+          if [ "$HANDLING" = "single_zip_split" ]; then
+            if [ "$FILE_COUNT" -eq 1 ]; then
+              echo "📦 Single file — using as base archive"
+              SOURCE_FILE=$(ls tmp_downloads | head -1)
+              mv "tmp_downloads/$SOURCE_FILE" tmp_downloads/archive.zip
+            else
+              echo "📦 Creating archive from all files"
+              ARCHIVE_NAME="tmp_downloads/all_files_$(date +%Y%m%d_%H%M%S).zip"
+              zip -j "$ARCHIVE_NAME" tmp_downloads/*
+              rm -f tmp_downloads/*
+              mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
+            fi
+
+            FINAL_FILE="tmp_downloads/archive.zip"
+            SIZE=$(stat -c%s "$FINAL_FILE")
+            BASENAME="archive.zip"
+            TARGET_DIR="$TARGET_BASE/$BASENAME"
+            mkdir -p "$TARGET_DIR"
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ Splitting $(( SIZE / 1024 / 1024 ))MB into 90MB chunks"
+              split -b 90M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${BASENAME}.part"
+
+              # Create merge scripts
+              printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
+              printf 'echo Reconstructing archive.zip ...\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'copy /b "archive.zip.part*" "archive.zip" > nul\r\n' >> "$TARGET_DIR/merge.bat"
+              printf 'if errorlevel 1 ( echo ERROR & pause & exit /b 1 )\r\necho Done.\r\npause\r\n' >> "$TARGET_DIR/merge.bat"
+
+              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
+              printf 'cd "$(dirname "$0")"\ncat "archive.zip.part"* > "archive.zip"\necho "Done"\nread -n 1\n' >> "$TARGET_DIR/merge.command"
+              chmod +x "$TARGET_DIR/merge.command"
+
+              printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
+              printf 'cd "$(dirname "$0")"\ncat "archive.zip.part"* > "archive.zip"\necho "Done"\n' >> "$TARGET_DIR/merge.sh"
+              chmod +x "$TARGET_DIR/merge.sh"
+            else
+              cp "$FINAL_FILE" "$TARGET_DIR/archive.zip"
+            fi
+            rm -rf tmp_downloads
+
+          elif [ "$HANDLING" = "full_file_no_split" ]; then
+            for FILE in tmp_downloads/*; do
+              [ -f "$FILE" ] || continue
+              BASENAME=$(basename "$FILE")
+              TARGET_DIR="$TARGET_BASE/$BASENAME"
+              mkdir -p "$TARGET_DIR"
+              cp "$FILE" "$TARGET_DIR/$BASENAME"
+            done
+            rm -rf tmp_downloads
+
+          elif [ "$HANDLING" = "individual_split" ]; then
+            for FILE in tmp_downloads/*; do
+              [ -f "$FILE" ] || continue
+              SIZE=$(stat -c%s "$FILE")
+              BASENAME=$(basename "$FILE")
+              TARGET_DIR="$TARGET_BASE/$BASENAME"
+              mkdir -p "$TARGET_DIR"
+              if [ "$SIZE" -gt "$LIMIT" ]; then
+                split -b 90M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME}.part"
+                printf '@echo off\r\n' > "$TARGET_DIR/merge.bat"
+                printf 'copy /b "%s.part*" "%s" > nul\r\necho Done\r\npause\r\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.bat"
+                printf '#!/bin/bash\n' > "$TARGET_DIR/merge.command"
+                printf 'cat "%s.part"* > "%s"\necho "Done"\nread -n 1\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.command"
+                chmod +x "$TARGET_DIR/merge.command"
+                printf '#!/bin/bash\n' > "$TARGET_DIR/merge.sh"
+                printf 'cat "%s.part"* > "%s"\necho "Done"\n' "$BASENAME" "$BASENAME" >> "$TARGET_DIR/merge.sh"
+                chmod +x "$TARGET_DIR/merge.sh"
+              else
+                cp "$FILE" "$TARGET_DIR/$BASENAME"
+              fi
+            done
+            # Create master reconstruction script
+            MASTER_SCRIPT="$TARGET_BASE/reconstruct_all.sh"
+            printf '#!/bin/bash\nset -e\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\ncd "$SCRIPT_DIR"\nfor dir in */; do if [ -d "$dir" ] && [ -f "$dir/merge.sh" ]; then (cd "$dir" && bash merge.sh); fi; done\necho "All done"\n' > "$MASTER_SCRIPT"
+            chmod +x "$MASTER_SCRIPT"
+            rm -rf tmp_downloads
+
+          elif [ "$HANDLING" = "zip" ]; then
+            ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
+            zip -j "$ARCHIVE_NAME" tmp_downloads/*
+            rm -f tmp_downloads/*
+            mv "$ARCHIVE_NAME" tmp_downloads/archive.zip
+
+            FINAL_FILE="tmp_downloads/archive.zip"
+            SIZE=$(stat -c%s "$FINAL_FILE")
+            BASENAME="archive.zip"
+            TARGET_DIR="$TARGET_BASE/$BASENAME"
+            mkdir -p "$TARGET_DIR"
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ Splitting archive into 90MB chunks"
+              split -b 90M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/${BASENAME}.part"
+              printf '#!/bin/bash\ncd "$(dirname "$0")"\ncat "archive.zip.part"* > "archive.zip"\necho "Done"\n' > "$TARGET_DIR/merge.sh"
+              chmod +x "$TARGET_DIR/merge.sh"
+            else
+              cp "$FINAL_FILE" "$TARGET_DIR/archive.zip"
+            fi
+            rm -rf tmp_downloads
+
+          else
+            echo "❌ Unknown handling mode: $HANDLING"
+            exit 1
+          fi
+
+          echo "✅ File processing complete"
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+
+      - name: Upload to target sites
+        if: inputs.target_sites != ''
+        run: |
+          set -e -x
+          exec > >(tee -a "$LOG_FILE") 2>&1
+
+          TARGET_SITES="${{ inputs.target_sites }}"
+          CREDENTIALS="${{ secrets.SITE_CREDENTIALS || '' }}"
+          UPLOAD_MODE="${{ inputs.upload_mode }}"
+
+          echo "Target sites: $TARGET_SITES"
+          echo "Upload mode: $UPLOAD_MODE"
+
+          if [ "$UPLOAD_MODE" = "full" ]; then
+            FILES_TO_UPLOAD=$(find downloads -type f -name "*.full" | head -1)
+            if [ -z "$FILES_TO_UPLOAD" ]; then
+              FILES_TO_UPLOAD=$(find downloads -type f \
+                ! -name "*.bat" ! -name "*.command" ! -name "*.sh" \
+                ! -name "password.txt" ! -name "reconstruct_all.sh" | head -1)
+            fi
+            if [ -z "$FILES_TO_UPLOAD" ]; then
+              echo "❌ No file found to upload"
+              exit 1
+            fi
+            echo "Uploading full file: $FILES_TO_UPLOAD"
+            python upload_to_sites.py \
+              --file "$FILES_TO_UPLOAD" \
+              --sites "$TARGET_SITES" \
+              --creds "$CREDENTIALS"
+          else
+            PART_FILES=$(find downloads -type f -name "*.part*" | sort)
+            if [ -z "$PART_FILES" ]; then
+              echo "❌ No part files found to upload"
+              exit 1
+            fi
+            for PART in $PART_FILES; do
+              echo "Uploading part file: $PART"
+              python upload_to_sites.py \
+                --file "$PART" \
+                --sites "$TARGET_SITES" \
+                --creds "$CREDENTIALS"
+            done
+          fi
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+
+      - name: Upload log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 7
+
+      - name: Commit & Push
+        if: always()
+        run: |
+          set -e -x
+          exec > >(tee -a "$LOG_FILE") 2>&1
+
+          SOURCE="${{ inputs.source }}"
+          HANDLING="${{ inputs.handling }}"
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # Remove sensitive files before committing
+          find downloads/ -name 'password.txt' -delete 2>/dev/null || true
+          rm -f logs/passwords_debug.log 2>/dev/null || true
+
+          git add downloads/ upload_results.txt logs/ 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Download results from ${SOURCE} [skip ci]"
+            git pull --rebase origin "${{ github.ref_name }}" || echo "Rebase failed"
+            git push || echo "Push failed"
+          else
+            echo "No changes to commit"
+          fi
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}

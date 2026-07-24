@@ -1,0 +1,105 @@
+name: دانلود از MEGA یا Pixeldrain و ذخیره در مخزن
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'منبع دانلود را انتخاب کنید'
+        required: true
+        default: 'pixeldrain'
+        type: choice
+        options:
+          - mega
+          - pixeldrain
+      mega_link:
+        description: 'لینک فایل یا پوشه در MEGA (در صورت انتخاب MEGA)'
+        required: false
+        default: ''
+        type: string
+      pixeldrain_link:
+        description: 'لینک فایل در Pixeldrain (در صورت انتخاب Pixeldrain)'
+        required: false
+        default: ''
+        type: string
+      handling:
+        description: 'نحوه برخورد با فایل‌های دانلود شده'
+        required: false
+        default: 'single_zip_split'
+        type: choice
+        options:
+          - single_zip_split
+          - full_file_no_split
+          - individual_split
+  push:
+    branches:
+      - "**"
+
+jobs:
+  # Job 1: Parse inputs from commit message (for push triggers)
+  parse:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'mega:') ||
+      contains(github.event.head_commit.message, 'mega-zip:') ||
+      contains(github.event.head_commit.message, 'mega-full:') ||
+      contains(github.event.head_commit.message, 'pixeldrain:')
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.resolve.outputs.source }}
+      urls: ${{ steps.resolve.outputs.urls }}
+      handling: ${{ steps.resolve.outputs.handling }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve inputs
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SOURCE="${{ github.event.inputs.source }}"
+            HANDLING="${{ github.event.inputs.handling }}"
+            if [ "$SOURCE" = "mega" ]; then
+              URLS="${{ github.event.inputs.mega_link }}"
+            else
+              URLS="${{ github.event.inputs.pixeldrain_link }}"
+            fi
+          else
+            MSG=$(git log -1 --pretty=%B)
+            if echo "$MSG" | grep -qP 'pixeldrain:'; then
+              SOURCE="pixeldrain"
+              HANDLING="single_zip_split"
+              URLS=$(echo "$MSG" | grep -oP 'pixeldrain:\s*\K.*')
+            elif echo "$MSG" | grep -qP 'mega-full:'; then
+              SOURCE="mega"
+              HANDLING="full_file_no_split"
+              URLS=$(echo "$MSG" | grep -oP 'mega-full:\s*\K.*')
+            elif echo "$MSG" | grep -qP 'mega-zip:'; then
+              SOURCE="mega"
+              HANDLING="single_zip_split"
+              URLS=$(echo "$MSG" | grep -oP 'mega-zip:\s*\K.*')
+            elif echo "$MSG" | grep -qP 'mega:'; then
+              SOURCE="mega"
+              HANDLING="individual_split"
+              URLS=$(echo "$MSG" | grep -oP 'mega:\s*\K.*')
+            else
+              echo "❌ No valid command found in commit message"
+              exit 1
+            fi
+          fi
+          echo "source=$SOURCE" >> $GITHUB_OUTPUT
+          echo "urls=$URLS" >> $GITHUB_OUTPUT
+          echo "handling=$HANDLING" >> $GITHUB_OUTPUT
+
+  # Job 2: Process using reusable workflow
+  save-file:
+    needs: parse
+    uses: ./.github/workflows/_reusable-process.yml
+    with:
+      source: "${{ needs.parse.outputs.source }}"
+      urls: "${{ needs.parse.outputs.urls }}"
+      handling: "${{ needs.parse.outputs.handling }}"
+    secrets:
+      MEGA_LINK_PASSWORD: ${{ secrets.MEGA_LINK_PASSWORD }}
+      MEGA_FILE_PASSWORD: ${{ secrets.MEGA_FILE_PASSWORD }}
