@@ -104,9 +104,16 @@ jobs:
               exit 1
             fi
           fi
-          echo "source=$SOURCE" >> $GITHUB_OUTPUT
-          echo "urls=$URLS" >> $GITHUB_OUTPUT
-          echo "handling=$HANDLING" >> $GITHUB_OUTPUT
+          # Use heredoc to preserve special characters (#, &, etc.) in URLs
+          echo "source<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$SOURCE" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
+          echo "urls<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$URLS" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
+          echo "handling<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$HANDLING" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
 
   # Job 2: Process using reusable workflow
   save-file:

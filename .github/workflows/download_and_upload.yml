@@ -74,9 +74,16 @@ jobs:
         id: resolve
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "urls=${{ github.event.inputs.url }}" >> $GITHUB_OUTPUT
-            echo "handling=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
-            echo "link_password=${{ github.event.inputs.link_password }}" >> $GITHUB_OUTPUT
+            # Use heredoc to preserve special characters (#, &, etc.) in URLs
+            echo "urls<<GHEOF" >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.url }}" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+            echo "handling<<GHEOF" >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+            echo "link_password<<GHEOF" >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.link_password }}" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
           else
             MSG=$(git log -1 --pretty=%B)
             if echo "$MSG" | grep -qP 'github-zip:'; then
@@ -86,8 +93,13 @@ jobs:
               URLS=$(echo "$MSG" | grep -oP 'github:\s*\K.*')
               HANDLING="normal"
             fi
-            echo "urls=$URLS" >> $GITHUB_OUTPUT
-            echo "handling=$HANDLING" >> $GITHUB_OUTPUT
+            # Use heredoc to preserve special characters (#, &, etc.) in URLs
+            echo "urls<<GHEOF" >> $GITHUB_OUTPUT
+            echo "$URLS" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+            echo "handling<<GHEOF" >> $GITHUB_OUTPUT
+            echo "$HANDLING" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
             echo "link_password=" >> $GITHUB_OUTPUT
           fi
 
