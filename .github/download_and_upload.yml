@@ -1,0 +1,135 @@
+name: 📥 دانلود فایل از لینک مستقیم و آپلود به سایت‌های میزبان
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'لینک فایل مستقیم (یا چند لینک با فاصله). پشتیبانی از لینک‌های معمولی و لینک‌های دارای Basic Auth'
+        required: true
+        type: string
+      mode:
+        description: 'normal=نگه‌داشتن اسم+split, zip=ZIP+split, single_zip=ZIP+split, full=کپی ساده, individual=جدا+split'
+        default: 'normal'
+        type: choice
+        options:
+          - normal
+          - zip
+          - single_zip_split
+          - full_file_no_split
+          - individual_split
+      link_password:
+        description: '🔑 رمز لینک (HTTP Basic Auth) — اختیاری. فرمت: username:password'
+        required: false
+        type: string
+      target_sites:
+        description: '🌐 سایت‌های مقصد (با کاما جدا کنید). پشتیبانی: gofile.io, pixeldrain.com, catbox.moe, file.io, 0x0.st, buzzheavier.com, filebin.net, krakenfiles.com, 1fichier.com, mixdrop.co, erfanzadeh.ir'
+        required: true
+        type: string
+        default: 'erfanzadeh.ir'
+      split_size:
+        description: '📏 حجم هر تکه بر حسب مگابایت (پیش‌فرض 90، فقط در حالت custom استفاده میشه)'
+        required: false
+        default: 90
+        type: string
+      split_mode:
+        description: '🤖 auto=هوشمند بر اساس نوع فایل, custom=دستی با split_size'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - custom
+      upload_mode:
+        description: '📤 full=فایل کامل آپلود بشه, parts=تکه‌های split شده آپلود بشن'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - parts
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  # Job 1: Parse inputs from commit message (for push triggers)
+  parse:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'github:') ||
+      contains(github.event.head_commit.message, 'github-zip:')
+    runs-on: ubuntu-latest
+    outputs:
+      urls: ${{ steps.resolve.outputs.urls }}
+      handling: ${{ steps.resolve.outputs.handling }}
+      link_password: ${{ steps.resolve.outputs.link_password }}
+      split_size: ${{ steps.resolve.outputs.split_size }}
+      split_mode: ${{ steps.resolve.outputs.split_mode }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve inputs
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SPLIT_SIZE="${{ github.event.inputs.split_size }}"
+            SPLIT_MODE="${{ github.event.inputs.split_mode }}"
+            # Use heredoc to preserve special characters (#, &, etc.) in URLs
+            echo "urls<<GHEOF" >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.url }}" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+            echo "handling<<GHEOF" >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+            echo "link_password<<GHEOF" >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.link_password }}" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+          else
+            MSG=$(git log -1 --pretty=%B)
+            if echo "$MSG" | grep -qP 'github-zip:'; then
+              URLS=$(echo "$MSG" | grep -oP 'github-zip:\s*\K.*')
+              HANDLING="zip"
+            else
+              URLS=$(echo "$MSG" | grep -oP 'github:\s*\K.*')
+              HANDLING="normal"
+            fi
+            SPLIT_SIZE="90"
+            SPLIT_MODE="auto"
+            # Use heredoc to preserve special characters (#, &, etc.) in URLs
+            echo "urls<<GHEOF" >> $GITHUB_OUTPUT
+            echo "$URLS" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+            echo "handling<<GHEOF" >> $GITHUB_OUTPUT
+            echo "$HANDLING" >> $GITHUB_OUTPUT
+            echo "GHEOF" >> $GITHUB_OUTPUT
+            echo "link_password=" >> $GITHUB_OUTPUT
+          fi
+          # Split settings (user value for dispatch, defaults for push)
+          echo "split_size<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$SPLIT_SIZE" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
+          echo "split_mode<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$SPLIT_MODE" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
+
+  # Job 2: Process using reusable workflow
+  process:
+    needs: parse
+    permissions:
+      contents: write
+    uses: ./.github/workflows/_reusable-process.yml
+    with:
+      source: "direct"
+      urls: "${{ needs.parse.outputs.urls }}"
+      handling: "${{ needs.parse.outputs.handling }}"
+      target_sites: "${{ github.event.inputs.target_sites || 'erfanzadeh.ir' }}"
+      upload_mode: "${{ github.event.inputs.upload_mode || 'full' }}"
+      link_password: "${{ needs.parse.outputs.link_password }}"
+      split_size: "${{ needs.parse.outputs.split_size || '90' }}"
+      split_mode: "${{ needs.parse.outputs.split_mode || 'auto' }}"
+    secrets:
+      SITE_CREDENTIALS: ${{ secrets.SITE_CREDENTIALS }}

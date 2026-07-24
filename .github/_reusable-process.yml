@@ -1,0 +1,156 @@
+name: "_Reusable: Download, Process & Upload"
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: "Source type: direct, mega, pixeldrain"
+        required: true
+        type: string
+      urls:
+        description: "Space-separated list of download URLs"
+        required: true
+        type: string
+      handling:
+        description: "File handling mode: normal, zip, single_zip_split, full_file_no_split, individual_split"
+        required: false
+        type: string
+        default: "normal"
+      target_sites:
+        description: "Comma-separated list of upload target sites"
+        required: false
+        type: string
+        default: ""
+      upload_mode:
+        description: "Upload mode: full or parts"
+        required: false
+        type: string
+        default: "full"
+      link_password:
+        description: "Link password (for HTTP Basic Auth or MEGA)"
+        required: false
+        type: string
+        default: ""
+      split_size:
+        description: "Split chunk size in MB (used when split_mode=custom, default: 90)"
+        required: false
+        type: string
+        default: "90"
+      split_mode:
+        description: "Split mode: auto (recommend based on file type) or custom (use split_size)"
+        required: false
+        type: string
+        default: "auto"
+    secrets:
+      SITE_CREDENTIALS:
+        description: "Credentials for upload sites (site:username:password per line)"
+        required: false
+      MEGA_LINK_PASSWORD:
+        description: "MEGA link password"
+        required: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup
+        run: |
+          set -euo pipefail
+          # Clean previous run artifacts to prevent stale file conflicts
+          rm -rf downloads tmp_downloads
+          mkdir -p logs downloads tmp_downloads
+          LOG_FILE="logs/run_$(date +%Y%m%d_%H%M%S).log"
+          echo "LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
+          chmod +x .github/scripts/*.sh
+          echo "Starting workflow at $(date)" | tee -a "$LOG_FILE"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$LOG_FILE") 2>&1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl zip unzip wget megatools
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+
+      - name: Download files
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$LOG_FILE") 2>&1
+          bash .github/scripts/download.sh
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+          INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_URLS: ${{ inputs.urls }}
+          INPUT_LINK_PASS: ${{ inputs.link_password }}
+          MEGA_SECRET_PASS: ${{ secrets.MEGA_LINK_PASSWORD }}
+
+      - name: Process files (zip/split)
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$LOG_FILE") 2>&1
+          bash .github/scripts/process.sh
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+          INPUT_HANDLING: ${{ inputs.handling }}
+          INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_SPLIT_SIZE: ${{ inputs.split_size || 90 }}
+          INPUT_SPLIT_MODE: ${{ inputs.split_mode || 'auto' }}
+
+      - name: Upload to target sites
+        if: inputs.target_sites != ''
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$LOG_FILE") 2>&1
+          bash .github/scripts/upload.sh
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+          INPUT_TARGET_SITES: ${{ inputs.target_sites }}
+          INPUT_UPLOAD_MODE: ${{ inputs.upload_mode }}
+          SITE_CREDS: ${{ secrets.SITE_CREDENTIALS }}
+
+      - name: Create GitHub Release
+        if: inputs.target_sites == ''
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$LOG_FILE") 2>&1
+          bash .github/scripts/release.sh
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+          INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_HANDLING: ${{ inputs.handling }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Commit & Push (small files only)
+        if: always()
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$LOG_FILE") 2>&1
+          bash .github/scripts/commit.sh
+        env:
+          LOG_FILE: ${{ env.LOG_FILE }}
+          INPUT_SOURCE: ${{ inputs.source }}
+          INPUT_HANDLING: ${{ inputs.handling }}
+          INPUT_SPLIT_SIZE: ${{ inputs.split_size || 90 }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-results-${{ github.run_id }}
+          path: |
+            logs/
+            upload_results.txt
+            upload_results.json
+            downloads/
+          retention-days: 14
