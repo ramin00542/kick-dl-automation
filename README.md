@@ -1,129 +1,142 @@
-# 📦 File Download & Upload Automation
+# File Download & Upload Automation
 
-GitHub Actions-based system for downloading files from various sources, processing them (zip/split), and uploading to multiple file hosting services.
+GitHub Actions-based system for downloading files from MEGA, Pixeldrain, or direct links, processing them (zip/split), and uploading to multiple file hosting services or creating GitHub Releases.
 
-## ✨ Features
+## Features
 
-- 📥 **Download** from direct URLs, MEGA, and Pixeldrain
-- 🔄 **Process** files: zip archives, split into 90MB chunks, generate merge scripts
-- 📤 **Upload** to 12 file hosting services
-- 📱 **Download APKs** from Google Play Store
-- 🔐 **Credential management** via GitHub Secrets
-- 📊 **Logging** and result reporting
+- **Multiple download sources**: MEGA, Pixeldrain, direct HTTP links
+- **Flexible processing**: Zip, split (>90MB), keep original, or individual processing
+- **12 upload destinations**: API-based and browser-automated sites
+- **GitHub Releases**: Upload files up to 2GB as release assets (solves 90MB split problem)
+- **Artifact storage**: Processed files uploaded as GitHub Artifacts for temporary retrieval
+- **Secure**: Inputs passed via environment variables, no secret leakage in logs
 
-## 🚀 Workflows
+## Workflows
 
-### 1. Download & Upload (`download_and_upload.yml`)
+| Workflow | Trigger | Description |
+|----------|---------|-------------|
+| `download_and_upload.yml` | workflow_dispatch / push to main/master | Download from direct link, process, upload to file hosts |
+| `download-from-mega.yml` | workflow_dispatch / push to main/master | Download from MEGA or Pixeldrain, save to repo or upload |
+| `download-apk.yml` | workflow_dispatch | Download APK from Google Play Store |
 
-Download files from direct URLs and upload to file hosts.
-
-**Trigger:** Manual dispatch or push with `github:` in commit message
-
-**Parameters:**
-- `url` - File URL(s) (space-separated)
-- `mode` - `normal` or `zip`
-- `link_password` - HTTP Basic Auth password (optional)
-- `file_password` - Archive password (optional)
-- `target_sites` - Comma-separated upload destinations
-- `upload_mode` - `full` (single file) or `parts` (split files)
-
-### 2. Download from MEGA/Pixeldrain (`download-from-mega.yml`)
-
-Download from MEGA or Pixeldrain and save to repository.
-
-**Trigger:** Manual dispatch or push with `mega:`, `mega-zip:`, `mega-full:`, or `pixeldrain:` in commit message
-
-### 3. Download APK (`download-apk.yml`)
-
-Download any Android app from Google Play Store.
-
-**Trigger:** Manual dispatch
-
-**Parameters:**
-- `package_name` - App package name or Google Play URL
-
-## 📤 Supported Upload Sites
-
-| Site | Type | Auth Required | Notes |
-|------|------|---------------|-------|
-| erfanzadeh.ir | Selenium | Yes (Basic Auth) | Private hosting |
-| gofile.io | API | No | Permanent storage |
-| pixeldrain.com | API | No | ~90 day retention |
-| file.io | API | No | Deleted after 1st download |
-| catbox.moe | API | No | Permanent, 200MB max |
-| litterbox.catbox.moe | API | No | Temporary (72h) |
-| 0x0.st | API | No | ~2 week retention |
-| buzzheavier.com | API | No | No file type limits |
-| filebin.net | API | No | Temporary bins |
-| krakenfiles.com | Selenium | No | Popular hosting |
-| 1fichier.com | Selenium | Optional | Large file support |
-| mixdrop.co | Selenium | No | Video hosting |
-
-## 🔧 Setup
-
-### GitHub Secrets
-
-| Secret | Description | Required |
-|--------|-------------|----------|
-| `SITE_CREDENTIALS` | Upload site credentials (one per line: `site:username:password`) | For private sites |
-| `MEGA_LINK_PASSWORD` | MEGA link password | For password-protected MEGA links |
-| `MEGA_FILE_PASSWORD` | MEGA file password | For encrypted MEGA archives |
-
-### Workflow Inputs
-
-| Input | Description | Default |
-|-------|-------------|---------|
-| `target_sites` | Comma-separated upload destinations | `erfanzadeh.ir` |
-| `upload_mode` | `full` or `parts` | `full` |
-
-## 📁 Project Structure
+### Commit Message Commands (push trigger)
 
 ```
-├── .github/workflows/
-│   ├── download_and_upload.yml    # Main download & upload workflow
-│   ├── download-from-mega.yml     # MEGA/Pixeldrain download workflow
-│   ├── download-apk.yml           # Google Play APK downloader
-│   └── _reusable-process.yml      # Shared download/process/upload logic
-├── upload_to_sites.py             # Upload automation script (12 sites)
-└── requirements.txt               # Python dependencies
+github: https://example.com/file.zip           # Download with normal handling
+github-zip: https://example.com/files/         # Download and zip all files
+mega: https://mega.nz/file/abc                  # Download from MEGA (individual split)
+mega-zip: https://mega.nz/file/abc             # Download from MEGA (zip + split)
+mega-full: https://mega.nz/file/abc            # Download from MEGA (no split)
+pixeldrain: https://pixeldrain.com/u/abc       # Download from Pixeldrain
 ```
 
-## 🛠️ Local Development
+## File Handling Modes
+
+| Mode | Behavior | Output |
+|------|----------|--------|
+| `normal` | Keep original filenames, split only if >90MB | `downloads/<filename>/<filename>` + merge scripts if split |
+| `single_zip_split` | Zip all files into one archive, split if >90MB | `downloads/archive.zip/` + merge scripts |
+| `full_file_no_split` | Copy files as-is, no splitting | `downloads/<filename>/<filename>` |
+| `individual_split` | Each file in its own folder, split if >90MB | `downloads/<filename>/<filename>` + merge scripts |
+| `zip` | Zip all files, split if >90MB | `downloads/archive.zip/` + merge scripts |
+
+## Upload Sites
+
+### API-based (no browser required)
+
+| Site | Type | Auth | Max Size | Retention |
+|------|------|------|----------|-----------|
+| [gofile.io](https://gofile.io) | Permanent | None | Unlimited | Permanent |
+| [pixeldrain.com](https://pixeldrain.com) | Temporary | None | Unlimited | ~90 days |
+| [file.io](https://file.io) | Ephemeral | None | Unlimited | Until 1st download |
+| [catbox.moe](https://catbox.moe) | Permanent | None | 200MB | Permanent |
+| [litterbox.catbox.moe](https://litterbox.catbox.moe) | Temporary | None | 1GB | 72 hours |
+| [0x0.st](https://0x0.st) | Anonymous | None | 512MB | ~2 weeks |
+| [buzzheavier.com](https://buzzheavier.com) | Permanent | None | Unlimited | Generous |
+| [filebin.net](https://filebin.net) | Temporary | None | Unlimited | Temporary |
+
+### Selenium-based (browser automation)
+
+| Site | Type | Auth | Notes |
+|------|------|------|-------|
+| [erfanzadeh.ir](https://erfanzadeh.ir) | Permanent | Required | Basic Auth credentials needed |
+| [krakenfiles.com](https://krakenfiles.com) | Temporary | None | Popular file hosting |
+| [1fichier.com](https://1fichier.com) | Permanent | Optional | Supports very large files |
+| [mixdrop.co](https://mixdrop.co) | Temporary | None | Video hosting |
+
+## Large File Strategy
+
+GitHub has a 100MB file size limit. This project handles large files in three ways:
+
+1. **Split + Merge Scripts**: Files >90MB are split into parts with `merge.bat`/`merge.sh` scripts for reconstruction
+2. **GitHub Releases**: Files up to 2GB can be uploaded as release assets (recommended for files >90MB)
+3. **External Upload Sites**: Upload to gofile.io, buzzheavier.com, etc. for unlimited size
+
+### Recommended approach for large files:
+
+```yaml
+# In workflow_dispatch, leave target_sites empty to create a GitHub Release:
+target_sites: ""  # Creates Release with all files + parts + merge scripts
+```
+
+Or upload to external hosts:
+
+```yaml
+target_sites: "gofile.io,buzzheavier.com"  # Uploads full file (no split)
+upload_mode: "full"
+```
+
+## Setup
+
+### Required Secrets
+
+| Secret | Description |
+|--------|-------------|
+| `SITE_CREDENTIALS` | Upload site credentials (format: `site:username:password` per line) |
+| `MEGA_LINK_PASSWORD` | MEGA link password (if protected) |
+| `MEGA_FILE_PASSWORD` | MEGA file password (reserved for future use) |
+
+### Example SITE_CREDENTIALS
+
+```
+erfanzadeh.ir:myuser:mypassword
+gofile.io:guest
+```
+
+## Project Structure
+
+```
+.github/workflows/
+├── _reusable-process.yml    # Core download/process/upload logic
+├── download_and_upload.yml  # Direct link workflow
+├── download-from-mega.yml   # MEGA/Pixeldrain workflow
+└── download-apk.yml         # Google Play APK downloader
+
+upload_to_sites.py           # Upload functions for all 12 sites
+requirements.txt             # Python dependencies
+.gitignore                   # Git ignore patterns
+```
+
+## Local Development
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Run upload script
-python upload_to_sites.py \
-  --file path/to/file.zip \
-  --sites "gofile.io,pixeldrain.com" \
-  --creds "gofile.io:user:pass"
+# Test upload to a single site
+python upload_to_sites.py --file test.zip --sites "gofile.io"
+
+# Test upload to multiple sites
+python upload_to_sites.py --file test.zip --sites "gofile.io,pixeldrain.com"
 ```
 
-## 📋 File Processing Modes
+## Security
 
-| Mode | Description |
-|------|-------------|
-| `normal` / `single_zip_split` | Zip all files, split if >90MB |
-| `zip` | Zip all files, split if >90MB |
-| `full_file_no_split` | Keep files as-is, no splitting |
-| `individual_split` | Split each file individually if >90MB |
+- **No secrets in logs**: Uses `set -euo pipefail` (not `set -x`) to prevent variable expansion in logs
+- **Input validation**: All workflow inputs passed via environment variables to prevent shell injection
+- **Credential protection**: Passwords stored in GitHub Secrets, never hardcoded
+- **Log sanitization**: Sensitive files removed before commit
 
-### Split Files
+## License
 
-When files exceed 90MB, they're split into chunks with merge scripts:
-- `merge.bat` - Windows batch file
-- `merge.sh` - Linux/macOS shell script
-- `merge.command` - macOS double-click script
-
-## ⚠️ Important Notes
-
-- GitHub Actions runners have a 6-hour maximum runtime
-- Large file uploads may take significant time
-- Some sites have file size limits (check table above)
-- Credentials should always be stored in GitHub Secrets, never hardcoded
-
-## 📄 License
-
-MIT License
+MIT

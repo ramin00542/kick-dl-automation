@@ -777,8 +777,17 @@ def main():
     print(f"\n📊 Upload Summary:")
     print(f"{'─' * 50}")
     for site, link in results.items():
-        status = "✅" if not link.startswith("Error") else "❌"
-        print(f"  {status} {site}: {link[:80]}{'...' if len(link) > 80 else ''}")
+        status = "✅" if not str(link).startswith("Error") else "❌"
+        print(f"  {status} {site}: {str(link)[:80]}{'...' if len(str(link)) > 80 else ''}")
+
+    # Exit with error if ALL uploads failed
+    success_count = sum(
+        1 for link in results.values()
+        if not str(link).startswith("Error")
+    )
+    if success_count == 0 and results:
+        print(f"\n❌ All uploads failed!")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
