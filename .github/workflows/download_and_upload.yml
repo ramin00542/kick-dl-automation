@@ -8,12 +8,15 @@ on:
         required: true
         type: string
       mode:
-        description: 'حالت دانلود (normal یا zip)'
+        description: 'نحوه پردازش فایل‌ها'
         default: 'normal'
         type: choice
         options:
           - normal
           - zip
+          - single_zip_split
+          - full_file_no_split
+          - individual_split
       link_password:
         description: 'رمز لینک (HTTP Basic Auth) - اختیاری'
         required: false
@@ -23,6 +26,19 @@ on:
         required: true
         type: string
         default: 'erfanzadeh.ir'
+      split_size:
+        description: 'حجم هر تکه بر حسب MB (فقط در حالت custom استفاده میشه)'
+        required: false
+        default: 90
+        type: string
+      split_mode:
+        description: 'نحوه تعیین سایز تکه‌ها'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - custom
       upload_mode:
         description: 'حالت آپلود (تک فایل کامل یا تکه تکه)'
         required: true
@@ -88,5 +104,7 @@ jobs:
       target_sites: "${{ github.event.inputs.target_sites || 'erfanzadeh.ir' }}"
       upload_mode: "${{ github.event.inputs.upload_mode || 'full' }}"
       link_password: "${{ needs.parse.outputs.link_password }}"
+      split_size: ${{ github.event.inputs.split_size || 90 }}
+      split_mode: ${{ github.event.inputs.split_mode || 'auto' }}
     secrets:
       SITE_CREDENTIALS: ${{ secrets.SITE_CREDENTIALS }}
