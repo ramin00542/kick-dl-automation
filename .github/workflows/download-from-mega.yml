@@ -32,7 +32,8 @@ on:
           - individual_split
   push:
     branches:
-      - "**"
+      - main
+      - master
 
 jobs:
   # Job 1: Parse inputs from commit message (for push triggers)
@@ -104,4 +105,3 @@ jobs:
       handling: "${{ needs.parse.outputs.handling }}"
     secrets:
       MEGA_LINK_PASSWORD: ${{ secrets.MEGA_LINK_PASSWORD }}
-      MEGA_FILE_PASSWORD: ${{ secrets.MEGA_FILE_PASSWORD }}
