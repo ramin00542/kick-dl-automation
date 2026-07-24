@@ -64,6 +64,8 @@ jobs:
       source: ${{ steps.resolve.outputs.source }}
       urls: ${{ steps.resolve.outputs.urls }}
       handling: ${{ steps.resolve.outputs.handling }}
+      split_size: ${{ steps.resolve.outputs.split_size }}
+      split_mode: ${{ steps.resolve.outputs.split_mode }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,6 +78,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             SOURCE="${{ github.event.inputs.source }}"
             HANDLING="${{ github.event.inputs.handling }}"
+            SPLIT_SIZE="${{ github.event.inputs.split_size }}"
+            SPLIT_MODE="${{ github.event.inputs.split_mode }}"
             if [ "$SOURCE" = "mega" ]; then
               URLS="${{ github.event.inputs.mega_link }}"
             else
@@ -103,6 +107,8 @@ jobs:
               echo "❌ No valid command found in commit message"
               exit 1
             fi
+            SPLIT_SIZE="90"
+            SPLIT_MODE="auto"
           fi
           # Use heredoc to preserve special characters (#, &, etc.) in URLs
           echo "source<<GHEOF" >> $GITHUB_OUTPUT
@@ -113,6 +119,12 @@ jobs:
           echo "GHEOF" >> $GITHUB_OUTPUT
           echo "handling<<GHEOF" >> $GITHUB_OUTPUT
           echo "$HANDLING" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
+          echo "split_size<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$SPLIT_SIZE" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
+          echo "split_mode<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$SPLIT_MODE" >> $GITHUB_OUTPUT
           echo "GHEOF" >> $GITHUB_OUTPUT
 
   # Job 2: Process using reusable workflow
@@ -125,7 +137,7 @@ jobs:
       source: "${{ needs.parse.outputs.source }}"
       urls: "${{ needs.parse.outputs.urls }}"
       handling: "${{ needs.parse.outputs.handling }}"
-      split_size: ${{ github.event.inputs.split_size || 90 }}
-      split_mode: ${{ github.event.inputs.split_mode || 'auto' }}
+      split_size: "${{ needs.parse.outputs.split_size || '90' }}"
+      split_mode: "${{ needs.parse.outputs.split_mode || 'auto' }}"
     secrets:
       MEGA_LINK_PASSWORD: ${{ secrets.MEGA_LINK_PASSWORD }}

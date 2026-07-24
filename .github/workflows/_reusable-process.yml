@@ -34,8 +34,8 @@ on:
       split_size:
         description: "Split chunk size in MB (used when split_mode=custom, default: 90)"
         required: false
-        type: number
-        default: 90
+        type: string
+        default: "90"
       split_mode:
         description: "Split mode: auto (recommend based on file type) or custom (use split_size)"
         required: false

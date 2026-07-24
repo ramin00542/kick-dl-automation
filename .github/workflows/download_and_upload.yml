@@ -64,6 +64,8 @@ jobs:
       urls: ${{ steps.resolve.outputs.urls }}
       handling: ${{ steps.resolve.outputs.handling }}
       link_password: ${{ steps.resolve.outputs.link_password }}
+      split_size: ${{ steps.resolve.outputs.split_size }}
+      split_mode: ${{ steps.resolve.outputs.split_mode }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,6 +76,8 @@ jobs:
         id: resolve
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SPLIT_SIZE="${{ github.event.inputs.split_size }}"
+            SPLIT_MODE="${{ github.event.inputs.split_mode }}"
             # Use heredoc to preserve special characters (#, &, etc.) in URLs
             echo "urls<<GHEOF" >> $GITHUB_OUTPUT
             echo "${{ github.event.inputs.url }}" >> $GITHUB_OUTPUT
@@ -93,6 +97,8 @@ jobs:
               URLS=$(echo "$MSG" | grep -oP 'github:\s*\K.*')
               HANDLING="normal"
             fi
+            SPLIT_SIZE="90"
+            SPLIT_MODE="auto"
             # Use heredoc to preserve special characters (#, &, etc.) in URLs
             echo "urls<<GHEOF" >> $GITHUB_OUTPUT
             echo "$URLS" >> $GITHUB_OUTPUT
@@ -102,6 +108,13 @@ jobs:
             echo "GHEOF" >> $GITHUB_OUTPUT
             echo "link_password=" >> $GITHUB_OUTPUT
           fi
+          # Split settings (user value for dispatch, defaults for push)
+          echo "split_size<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$SPLIT_SIZE" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
+          echo "split_mode<<GHEOF" >> $GITHUB_OUTPUT
+          echo "$SPLIT_MODE" >> $GITHUB_OUTPUT
+          echo "GHEOF" >> $GITHUB_OUTPUT
 
   # Job 2: Process using reusable workflow
   process:
@@ -116,7 +129,7 @@ jobs:
       target_sites: "${{ github.event.inputs.target_sites || 'erfanzadeh.ir' }}"
       upload_mode: "${{ github.event.inputs.upload_mode || 'full' }}"
       link_password: "${{ needs.parse.outputs.link_password }}"
-      split_size: ${{ github.event.inputs.split_size || 90 }}
-      split_mode: ${{ github.event.inputs.split_mode || 'auto' }}
+      split_size: "${{ needs.parse.outputs.split_size || '90' }}"
+      split_mode: "${{ needs.parse.outputs.split_mode || 'auto' }}"
     secrets:
       SITE_CREDENTIALS: ${{ secrets.SITE_CREDENTIALS }}
