@@ -19,6 +19,9 @@ SPLIT_MB="${INPUT_SPLIT_SIZE:-90}"
 
 log_step "Preparing commit"
 
+# GitHub Actions env vars (with defaults for local testing)
+GITHUB_REF_NAME="${GITHUB_REF_NAME:-main}"
+
 # Configure git
 git config user.name "github-actions"
 git config user.email "github-actions@github.com"
@@ -46,6 +49,6 @@ fi
 
 log_info "Changes detected, committing..."
 git commit -m "Download results from ${SOURCE} [skip ci]"
-git pull --rebase origin "${GITHUB_REF_NAME:-main}" 2>/dev/null || log_warn "Rebase failed"
+git pull --rebase origin "$GITHUB_REF_NAME" 2>/dev/null || log_warn "Rebase failed"
 git push 2>/dev/null || log_warn "Push failed"
 log_info "Commit successful"

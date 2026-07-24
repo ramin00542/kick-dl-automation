@@ -37,21 +37,23 @@ RELEASE_TAG="release-$(date +%Y%m%d-%H%M%S)"
 log_step "Creating GitHub Release: $RELEASE_TAG"
 
 echo "Files to release:"
-echo "$RELEASE_FILES" | while IFS= read -r F; do
+# shellcheck disable=SC2044
+while IFS= read -r F; do
     F_SIZE=$(stat -c%s "$F" 2>/dev/null || echo 0)
     F_SIZE_MB=$((F_SIZE / 1024 / 1024))
     log_info "  $(basename "$F") (${F_SIZE_MB}MB)"
-done
+done <<< "$RELEASE_FILES"
 
 # Create release notes
 NOTES_FILE=$(mktemp)
 create_release_notes "$SOURCE" "$HANDLING" > "$NOTES_FILE"
-echo "$RELEASE_FILES" | while IFS= read -r F; do
+# shellcheck disable=SC2044
+while IFS= read -r F; do
     F_SIZE=$(stat -c%s "$F" 2>/dev/null || echo 0)
     F_SIZE_MB=$((F_SIZE / 1024 / 1024))
     F_NAME=$(basename "$F")
     printf -- '- \`%s\` (%dMB)\n' "$F_NAME" "$F_SIZE_MB" >> "$NOTES_FILE"
-done
+done <<< "$RELEASE_FILES"
 printf '\n---\n*Automated release by GitHub Actions*\n' >> "$NOTES_FILE"
 
 # Build file array for safe filename handling
@@ -67,4 +69,5 @@ gh release create "$RELEASE_TAG" \
     -- "${RELEASE_ARGS[@]}"
 
 rm -f "$NOTES_FILE"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-unknown/repo}"
 log_info "Release created: https://github.com/${GITHUB_REPOSITORY}/releases/tag/$RELEASE_TAG"

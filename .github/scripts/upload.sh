@@ -43,8 +43,8 @@ upload_file() {
 
 if [ "$UPLOAD_MODE" = "full" ]; then
     # Upload ALL .full files
-    FULL_FILES=$(find downloads -type f -name "*.full" -print0 2>/dev/null | xargs -0 -I {} echo {})
-    if [ -n "$FULL_FILES" ]; then
+    # shellcheck disable=SC2140
+    if find downloads -type f -name "*.full" -print0 2>/dev/null | grep -q .; then
         while IFS= read -r -d '' FILE; do
             upload_file "$FILE"
         done < <(find downloads -type f -name "*.full" -print0)

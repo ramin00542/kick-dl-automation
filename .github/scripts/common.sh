@@ -38,6 +38,7 @@ detect_split_size() {
     local dir="${1:-tmp_downloads}"
     local default="${2:-90}"
 
+    # shellcheck disable=SC2012
     FIRST_FILE=$(ls -1 "$dir" 2>/dev/null | head -1)
     if [ -z "$FIRST_FILE" ]; then
         echo "$default"
@@ -45,7 +46,7 @@ detect_split_size() {
     fi
 
     EXT="${FIRST_FILE##*.}"
-    EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
+    EXT_LOWER=$(tr '[:upper:]' '[:lower:]' <<< "$EXT")
 
     case "$EXT_LOWER" in
         # Video → 200MB (usually huge, fewer parts = easier download)
@@ -157,6 +158,7 @@ generate_master_script() {
 # Usage: flatten_directories "tmp_downloads"
 flatten_directories() {
     local base_dir="${1:-tmp_downloads}"
+    # shellcheck disable=SC2153
     find "$base_dir" -mindepth 2 -type f -print0 2>/dev/null | while IFS= read -r -d '' file; do
         local base
         base=$(basename "$file")
@@ -166,6 +168,7 @@ flatten_directories() {
         fi
         mv "$file" "$target"
     done
+    # shellcheck disable=SC2115
     find "$base_dir" -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
 }
 

@@ -29,6 +29,7 @@ fi
 if [ "$SPLIT_MODE" = "auto" ]; then
     DETECTED=$(detect_split_size "tmp_downloads" "$SPLIT_MB")
     if [ "$DETECTED" != "$SPLIT_MB" ]; then
+        # shellcheck disable=SC2012
         FIRST_FILE=$(ls -1 tmp_downloads 2>/dev/null | head -1)
         EXT="${FIRST_FILE##*.}"
         log_info "Auto mode: detected .${EXT} → ${DETECTED}MB chunks"
@@ -40,6 +41,7 @@ LIMIT=$((SPLIT_MB * 1024 * 1024))
 TARGET_BASE=$(get_target_base "$SOURCE")
 mkdir -p "$TARGET_BASE"
 
+# shellcheck disable=SC2012
 FILE_COUNT=$(ls -1 tmp_downloads 2>/dev/null | grep -v '^$' | wc -l)
 log_step "Processing $FILE_COUNT file(s) | mode: $HANDLING | split: ${SPLIT_MB}MB"
 log_info "Target: $TARGET_BASE"
@@ -48,6 +50,7 @@ log_info "Target: $TARGET_BASE"
 if [ "$HANDLING" = "single_zip_split" ]; then
     log_info "Creating ZIP archive from all files"
     if [ "$FILE_COUNT" -eq 1 ]; then
+        # shellcheck disable=SC2012
         SOURCE_FILE=$(ls tmp_downloads | head -1)
         zip -j "tmp_downloads/archive.zip" "tmp_downloads/$SOURCE_FILE"
         rm -f "tmp_downloads/$SOURCE_FILE"
@@ -62,9 +65,8 @@ if [ "$HANDLING" = "single_zip_split" ]; then
     mkdir -p "$TARGET_DIR"
 
     if [ "$SIZE" -gt "$LIMIT" ]; then
-        log_info "Splitting $(($SIZE / 1024 / 1024))MB into ${SPLIT_MB}MB chunks"
-        split -b ${SPLIT_MB}M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/archive.zip.part"
-        generate_merge_scripts "$TARGET_DIR" "archive.zip"
+        log_info "Splitting $(($SIZE / 1024 / 1024))MB into ${SPLIT_MB}MB chunks"            split -b "${SPLIT_MB}M" -d -a 2 "$FINAL_FILE" "$TARGET_DIR/archive.zip.part"
+            generate_merge_scripts "$TARGET_DIR" "archive.zip"
     else
         cp "$FINAL_FILE" "$TARGET_DIR/archive.zip"
         log_info "File is under limit, stored as-is"
@@ -98,7 +100,7 @@ elif [ "$HANDLING" = "individual_split" ]; then
 
         if [ "$SIZE" -gt "$LIMIT" ]; then
             log_info "Splitting $BASENAME_CLEAN ($(($SIZE / 1024 / 1024))MB)"
-            split -b ${SPLIT_MB}M -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
+            split -b "${SPLIT_MB}M" -d -a 2 "$FILE" "$TARGET_DIR/${BASENAME_CLEAN}.part"
             generate_merge_scripts "$TARGET_DIR" "$BASENAME_CLEAN"
         else
             cp "$FILE" "$TARGET_DIR/$BASENAME_CLEAN"
@@ -121,9 +123,8 @@ elif [ "$HANDLING" = "zip" ]; then
     mkdir -p "$TARGET_DIR"
 
     if [ "$SIZE" -gt "$LIMIT" ]; then
-        log_info "Splitting archive into ${SPLIT_MB}MB chunks"
-        split -b ${SPLIT_MB}M -d -a 2 "$FINAL_FILE" "$TARGET_DIR/archive.zip.part"
-        generate_merge_scripts "$TARGET_DIR" "archive.zip"
+        log_info "Splitting archive into ${SPLIT_MB}MB chunks"            split -b "${SPLIT_MB}M" -d -a 2 "$FINAL_FILE" "$TARGET_DIR/archive.zip.part"
+            generate_merge_scripts "$TARGET_DIR" "archive.zip"
     else
         cp "$FINAL_FILE" "$TARGET_DIR/archive.zip"
     fi
@@ -136,4 +137,4 @@ fi
 
 log_info "Processing complete!"
 echo "Files in downloads directory:"
-find downloads/ -type f -exec ls -lh {} \; 2>/dev/null | awk '{print "  " $5 "  " $NF}' || echo "  (no files)"
+find downloads/ -type f -exec ls -lh {} \; 2>/dev/null || echo "  (no files)"

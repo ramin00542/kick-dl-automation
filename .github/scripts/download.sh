@@ -35,9 +35,11 @@ log_info "URL count: $(echo "$INPUT_URLS" | wc -w)"
 mkdir -p tmp_downloads downloads
 log_info "Created tmp_downloads and downloads directories"
 
+# Word splitting is intentional for space-separated URLs
+# shellcheck disable=SC2086
 for URL in $INPUT_URLS; do
     log_info "Downloading: ${URL:0:80}..."
-    pushd tmp_downloads > /dev/null
+    pushd tmp_downloads > /dev/null || { log_error "pushd failed"; exit 1; }
 
     case "$INPUT_SOURCE" in
         mega)
@@ -89,7 +91,7 @@ for URL in $INPUT_URLS; do
             ;;
     esac
 
-    popd > /dev/null
+    popd > /dev/null || { log_warn "popd failed"; break; }
 done
 
 # Flatten nested directories safely
